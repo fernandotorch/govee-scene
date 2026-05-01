@@ -1,121 +1,408 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+import 'dart:math';
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 void main() {
-  runApp(const MyApp());
+  WidgetsFlutterBinding.ensureInitialized();
+  SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+  runApp(const GoveeApp());
 }
 
-class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+// ── Protocol constants ────────────────────────────────────────────────────────
 
-  // This widget is the root of your application.
+const _multicastIp   = '239.255.255.250';
+const _discoveryPort = 4001;
+const _listenPort    = 4002;
+const _controlPort   = 4003;
+
+// H6047: 10 segments — 0-4 left bar, 5-9 right bar.
+const _leftMask  = 0x01F;
+const _rightMask = 0x3E0;
+
+// ── UDP engine ────────────────────────────────────────────────────────────────
+
+class GoveeEngine {
+  InternetAddress? _deviceIp;
+  RawDatagramSocket? _socket;
+
+  Future<bool> discover() async {
+    try {
+      final recv = await RawDatagramSocket.bind(InternetAddress.anyIPv4, _listenPort);
+      final send = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
+
+      final msg = jsonEncode({'msg': {'cmd': 'scan', 'data': {'account_topic': 'reserve'}}});
+      send.send(utf8.encode(msg), InternetAddress(_multicastIp), _discoveryPort);
+
+      final completer = Completer<bool>();
+      Timer(const Duration(seconds: 5), () {
+        if (!completer.isCompleted) {
+          recv.close();
+          send.close();
+          completer.complete(false);
+        }
+      });
+
+      recv.listen((event) {
+        if (event == RawSocketEvent.read) {
+          final dg = recv.receive();
+          if (dg != null && !completer.isCompleted) {
+            _deviceIp = dg.address;
+            _initSocket().then((_) {
+              recv.close();
+              send.close();
+              completer.complete(true);
+            });
+          }
+        }
+      });
+
+      return completer.future;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<void> _initSocket() async {
+    _socket?.close();
+    _socket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
+  }
+
+  void _send(Map<String, dynamic> cmd) {
+    if (_deviceIp == null || _socket == null) return;
+    final payload = utf8.encode(jsonEncode({'msg': cmd}));
+    _socket!.send(payload, _deviceIp!, _controlPort);
+  }
+
+  void turnOn()                   => _send({'cmd': 'turn',       'data': {'value': 1}});
+  void turnOff()                  => _send({'cmd': 'turn',       'data': {'value': 0}});
+  void brightness(int v)          => _send({'cmd': 'brightness', 'data': {'value': v.clamp(1, 100)}});
+  void color(int r, int g, int b) => _send({'cmd': 'colorwc',   'data': {'color': {'r': r, 'g': g, 'b': b}, 'colorTemInKelvin': 0}});
+
+  void segColors(List<(int, int, int, int)> groups) {
+    final commands = [for (final (r, g, b, mask) in groups) _segPacket(r, g, b, mask)];
+    _send({'cmd': 'ptReal', 'data': {'command': commands}});
+  }
+
+  String _segPacket(int r, int g, int b, int mask) {
+    final pkt = Uint8List(20);
+    pkt[0] = 0x33;
+    pkt[1] = 0x05;
+    pkt[2] = 0x15;
+    pkt[3] = 0x01;
+    pkt[4] = r; pkt[5] = g; pkt[6] = b;
+    var m = mask;
+    for (var i = 0; i < 7; i++) {
+      pkt[12 + i] = m & 0xFF;
+      m >>= 8;
+    }
+    var xor = 0;
+    for (var i = 0; i < 19; i++) xor ^= pkt[i];
+    pkt[19] = xor;
+    return base64Encode(pkt);
+  }
+
+  void dispose() => _socket?.close();
+}
+
+// ── Scene runner ──────────────────────────────────────────────────────────────
+
+class SceneRunner {
+  final GoveeEngine engine;
+  Timer? _timer;
+  final _rng = Random();
+
+  SceneRunner(this.engine);
+
+  void stop() {
+    _timer?.cancel();
+    _timer = null;
+    engine.turnOff();
+  }
+
+  void _loop(Duration interval, void Function() fn) {
+    _timer?.cancel();
+    fn();
+    _timer = Timer.periodic(interval, (_) => fn());
+  }
+
+  void _loopVariable(Duration Function() onFn, Duration Function()? offFn) {
+    _timer?.cancel();
+    void tick(bool isOn) {
+      final delay = isOn ? onFn() : (offFn?.call() ?? Duration.zero);
+      _timer = Timer(delay, () => tick(offFn != null ? !isOn : true));
+    }
+    tick(true);
+  }
+
+  void police() {
+    engine.turnOn();
+    engine.brightness(100);
+    var phase = false;
+    _loop(const Duration(milliseconds: 250), () {
+      phase
+        ? engine.segColors([(0, 40, 255, _leftMask), (255, 0, 0, _rightMask)])
+        : engine.segColors([(255, 0, 0, _leftMask), (0, 40, 255, _rightMask)]);
+      phase = !phase;
+    });
+  }
+
+  void alarm() {
+    engine.turnOn();
+    engine.brightness(100);
+    var phase = false;
+    _loop(const Duration(milliseconds: 250), () {
+      phase
+        ? engine.segColors([(10, 2, 0, _leftMask),  (255, 55, 0, _rightMask)])
+        : engine.segColors([(255, 55, 0, _leftMask), (10, 2, 0, _rightMask)]);
+      phase = !phase;
+    });
+  }
+
+  void flicker() {
+    engine.turnOn();
+    _loopVariable(() {
+      engine.brightness(25 + _rng.nextInt(75));
+      engine.color(240, 230, 200);
+      return Duration(milliseconds: 40 + _rng.nextInt(160));
+    }, () {
+      engine.brightness(5 + _rng.nextInt(13));
+      return Duration(milliseconds: 10 + _rng.nextInt(60));
+    });
+  }
+
+  void club() {
+    final palette = [
+      (255, 0, 140), (255, 0, 140),
+      (0, 255, 100), (0, 255, 100),
+      (160, 0, 255), (0, 200, 255),
+    ];
+    engine.turnOn();
+    _loopVariable(() {
+      if (_rng.nextDouble() < 0.07) {
+        engine.color(255, 255, 255);
+        engine.brightness(100);
+        return const Duration(milliseconds: 40);
+      }
+      final (r, g, b) = palette[_rng.nextInt(palette.length)];
+      engine.color(r, g, b);
+      engine.brightness(55 + _rng.nextInt(45));
+      return Duration(milliseconds: 60 + _rng.nextInt(220));
+    }, null);
+  }
+
+  void disian() {
+    engine.turnOn();
+    var phase = 0.0;
+    _loop(const Duration(milliseconds: 50), () {
+      phase += 0.04;
+      final v = (sin(phase) + 1) / 2;
+      if (_rng.nextDouble() < 0.015) {
+        engine.color(200, 210, 255);
+        engine.brightness(85);
+        return;
+      }
+      engine.color((65 + v * 45).round(), 0, (105 + v * 95).round());
+      engine.brightness((22 + v * 58).round());
+    });
+  }
+
+  void dispose() => _timer?.cancel();
+}
+
+// ── App ───────────────────────────────────────────────────────────────────────
+
+class GoveeApp extends StatelessWidget {
+  const GoveeApp({super.key});
+
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Flutter Demo',
-      theme: ThemeData(
-        // This is the theme of your application.
-        //
-        // TRY THIS: Try running your application with "flutter run". You'll see
-        // the application has a purple toolbar. Then, without quitting the app,
-        // try changing the seedColor in the colorScheme below to Colors.green
-        // and then invoke "hot reload" (save your changes or press the "hot
-        // reload" button in a Flutter-supported IDE, or press "r" if you used
-        // the command line to start the app).
-        //
-        // Notice that the counter didn't reset back to zero; the application
-        // state is not lost during the reload. To reset the state, use hot
-        // restart instead.
-        //
-        // This works for code too, not just values: Most code changes can be
-        // tested with just a hot reload.
-        colorScheme: .fromSeed(seedColor: Colors.deepPurple),
-      ),
-      home: const MyHomePage(title: 'Flutter Demo Home Page'),
+      title: 'Govee Light Theater',
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData.dark().copyWith(scaffoldBackgroundColor: const Color(0xFF0E0E0E)),
+      home: const TheaterScreen(),
     );
   }
 }
 
-class MyHomePage extends StatefulWidget {
-  const MyHomePage({super.key, required this.title});
-
-  // This widget is the home page of your application. It is stateful, meaning
-  // that it has a State object (defined below) that contains fields that affect
-  // how it looks.
-
-  // This class is the configuration for the state. It holds the values (in this
-  // case the title) provided by the parent (in this case the App widget) and
-  // used by the build method of the State. Fields in a Widget subclass are
-  // always marked "final".
-
-  final String title;
-
+class TheaterScreen extends StatefulWidget {
+  const TheaterScreen({super.key});
   @override
-  State<MyHomePage> createState() => _MyHomePageState();
+  State<TheaterScreen> createState() => _TheaterScreenState();
 }
 
-class _MyHomePageState extends State<MyHomePage> {
-  int _counter = 0;
+class _TheaterScreenState extends State<TheaterScreen> {
+  final _engine = GoveeEngine();
+  late final SceneRunner _runner;
+  bool _discovering = true;
+  bool _found = false;
+  String _activeScene = '';
 
-  void _incrementCounter() {
-    setState(() {
-      // This call to setState tells the Flutter framework that something has
-      // changed in this State, which causes it to rerun the build method below
-      // so that the display can reflect the updated values. If we changed
-      // _counter without calling setState(), then the build method would not be
-      // called again, and so nothing would appear to happen.
-      _counter++;
-    });
+  @override
+  void initState() {
+    super.initState();
+    _runner = SceneRunner(_engine);
+    _doDiscover();
+  }
+
+  Future<void> _doDiscover() async {
+    setState(() { _discovering = true; _found = false; });
+    final ok = await _engine.discover();
+    setState(() { _discovering = false; _found = ok; });
+  }
+
+  void _trigger(String name, VoidCallback fn) {
+    setState(() => _activeScene = name);
+    fn();
+  }
+
+  @override
+  void dispose() {
+    _runner.dispose();
+    _engine.dispose();
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    // This method is rerun every time setState is called, for instance as done
-    // by the _incrementCounter method above.
-    //
-    // The Flutter framework has been optimized to make rerunning build methods
-    // fast, so that you can just rebuild anything that needs updating rather
-    // than having to individually change instances of widgets.
     return Scaffold(
-      appBar: AppBar(
-        // TRY THIS: Try changing the color here to a specific color (to
-        // Colors.amber, perhaps?) and trigger a hot reload to see the AppBar
-        // change color while the other colors stay the same.
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        // Here we take the value from the MyHomePage object that was created by
-        // the App.build method, and use it to set our appbar title.
-        title: Text(widget.title),
-      ),
-      body: Center(
-        // Center is a layout widget. It takes a single child and positions it
-        // in the middle of the parent.
-        child: Column(
-          // Column is also a layout widget. It takes a list of children and
-          // arranges them vertically. By default, it sizes itself to fit its
-          // children horizontally, and tries to be as tall as its parent.
-          //
-          // Column has various properties to control how it sizes itself and
-          // how it positions its children. Here we use mainAxisAlignment to
-          // center the children vertically; the main axis here is the vertical
-          // axis because Columns are vertical (the cross axis would be
-          // horizontal).
-          //
-          // TRY THIS: Invoke "debug painting" (choose the "Toggle Debug Paint"
-          // action in the IDE, or press "p" in the console), to see the
-          // wireframe for each widget.
-          mainAxisAlignment: .center,
-          children: [
-            const Text('You have pushed the button this many times:'),
-            Text(
-              '$_counter',
-              style: Theme.of(context).textTheme.headlineMedium,
-            ),
-          ],
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _buildHeader(),
+              const SizedBox(height: 24),
+              if (_discovering) ...[
+                const Center(child: CircularProgressIndicator()),
+                const SizedBox(height: 12),
+                const Center(child: Text('Searching for light bar…', style: TextStyle(color: Colors.grey))),
+              ] else if (!_found)
+                Expanded(child: _buildNotFound())
+              else
+                Expanded(child: _buildSceneList()),
+            ],
+          ),
         ),
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _incrementCounter,
-        tooltip: 'Increment',
-        child: const Icon(Icons.add),
+    );
+  }
+
+  Widget _buildHeader() {
+    return Row(
+      children: [
+        const Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('GOVEE LIGHT THEATER', style: TextStyle(fontSize: 11, color: Colors.grey, letterSpacing: 1.5)),
+              SizedBox(height: 4),
+              Text('Session Control', style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+            ],
+          ),
+        ),
+        if (_found)
+          GestureDetector(
+            onTap: _doDiscover,
+            child: Container(
+              width: 10, height: 10,
+              decoration: const BoxDecoration(color: Colors.greenAccent, shape: BoxShape.circle),
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _buildNotFound() {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const Icon(Icons.wifi_off, color: Colors.grey, size: 48),
+          const SizedBox(height: 16),
+          const Text('Light bar not found', style: TextStyle(fontSize: 18)),
+          const SizedBox(height: 8),
+          const Text(
+            'Enable LAN Control in the Govee app\nand join the same Wi-Fi network.',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: Colors.grey),
+          ),
+          const SizedBox(height: 24),
+          ElevatedButton(onPressed: _doDiscover, child: const Text('Try again')),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSceneList() {
+    final scenes = [
+      _SceneDef('off',     'Off',               'Kill all effects',          [const Color(0xFF2a2a2a), const Color(0xFF1a1a1a)], Colors.grey,                 () => _trigger('off',     _runner.stop)),
+      _SceneDef('police',  'Police Siren',       'Red / blue rotating',       [const Color(0xFFCC0000), const Color(0xFF0033DD)], Colors.white,                () => _trigger('police',  _runner.police)),
+      _SceneDef('alarm',   'Emergency Alarm',    'Orange rotating beacon',    [const Color(0xFF7a2800), const Color(0xFF3a1000)], const Color(0xFFFFAA44),     () => _trigger('alarm',   _runner.alarm)),
+      _SceneDef('club',    'Techno Club',        'Pink & green strobe',       [const Color(0xFFCC006E), const Color(0xFF00CC66)], Colors.white,                () => _trigger('club',    _runner.club)),
+      _SceneDef('flicker', 'Flickering Light',   'Damaged fluorescent',       [const Color(0xFF3a3020), const Color(0xFF1a1808)], const Color(0xFFD4C080),     () => _trigger('flicker', _runner.flicker)),
+      _SceneDef('disian',  'Disian Encounter',   'Deep purple — metaplane',   [const Color(0xFF1a0033), const Color(0xFF330055)], const Color(0xFFCCAAFF),     () => _trigger('disian',  _runner.disian)),
+    ];
+
+    return ListView.separated(
+      itemCount: scenes.length,
+      separatorBuilder: (_, __) => const SizedBox(height: 10),
+      itemBuilder: (_, i) => _SceneButton(scene: scenes[i], active: _activeScene == scenes[i].name),
+    );
+  }
+}
+
+// ── Scene button ──────────────────────────────────────────────────────────────
+
+class _SceneDef {
+  final String id, label, sub;
+  final List<Color> gradient;
+  final Color textColor;
+  final VoidCallback action;
+  const _SceneDef(this.id, this.label, this.sub, this.gradient, this.textColor, this.action);
+}
+
+class _SceneButton extends StatelessWidget {
+  final _SceneDef scene;
+  final bool active;
+  const _SceneButton({super.key, required this.scene, required this.active});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: scene.action,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        decoration: BoxDecoration(
+          gradient: LinearGradient(colors: scene.gradient, begin: Alignment.centerLeft, end: Alignment.centerRight),
+          borderRadius: BorderRadius.circular(14),
+          border: active ? Border.all(color: Colors.white38, width: 1.5) : null,
+          boxShadow: active
+            ? [BoxShadow(color: scene.gradient.last.withAlpha(100), blurRadius: 12, spreadRadius: 1)]
+            : null,
+        ),
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 22),
+        child: Row(
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(scene.label, style: TextStyle(color: scene.textColor, fontWeight: FontWeight.bold, fontSize: 17)),
+                  const SizedBox(height: 3),
+                  Text(scene.sub, style: TextStyle(color: scene.textColor.withAlpha(160), fontSize: 13)),
+                ],
+              ),
+            ),
+            if (active) Icon(Icons.radio_button_checked, color: scene.textColor.withAlpha(180), size: 18),
+          ],
+        ),
       ),
     );
   }

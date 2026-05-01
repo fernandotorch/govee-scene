@@ -1,6 +1,6 @@
 {
-    "name": "govee_light_theater",
-    "short_name": "govee_light_theater",
+    "name": "Govee Scene",
+    "short_name": "Govee Scene",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#0175C2",
