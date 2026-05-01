@@ -122,12 +122,14 @@ class SceneRunner {
   final GoveeEngine engine;
   Timer? _timer;
   bool _cancelled = false;
+  int _sessionId = 0;
   final _rng = Random();
 
   SceneRunner(this.engine);
 
   void _stopLoop() {
     _cancelled = true;
+    _sessionId++;
     _timer?.cancel();
     _timer = null;
   }
@@ -181,27 +183,28 @@ class SceneRunner {
   void flicker() {
     _stopLoop();
     _cancelled = false;
+    final session = _sessionId;
     engine.turnOn();
     engine.segColors([(240, 230, 200, _leftMask), (240, 230, 200, _rightMask)]);
 
     Future<void> barLoop(int mask) async {
-      while (!_cancelled) {
+      while (!_cancelled && _sessionId == session) {
         engine.segColors([(240, 230, 200, mask)]);
         await Future.delayed(Duration(milliseconds: 3000 + _rng.nextInt(2001)));
-        if (_cancelled) break;
+        if (_cancelled || _sessionId != session) break;
 
         var remaining = 500 + _rng.nextInt(1501);
-        while (remaining > 0 && !_cancelled) {
+        while (remaining > 0 && !_cancelled && _sessionId == session) {
           final cut = min(remaining, 80 + _rng.nextInt(421));
           engine.segColors([(2, 2, 2, mask)]);
           await Future.delayed(Duration(milliseconds: cut));
           remaining -= cut;
-          if (_cancelled || remaining <= 0) break;
+          if (_cancelled || _sessionId != session || remaining <= 0) break;
           engine.segColors([(240, 230, 200, mask)]);
           await Future.delayed(Duration(milliseconds: 40 + _rng.nextInt(81)));
         }
 
-        if (!_cancelled) engine.segColors([(240, 230, 200, mask)]);
+        if (!_cancelled && _sessionId == session) engine.segColors([(240, 230, 200, mask)]);
       }
     }
 
@@ -212,6 +215,7 @@ class SceneRunner {
   void club() {
     _stopLoop();
     _cancelled = false;
+    final session = _sessionId;
     engine.turnOn();
 
     Future<void> run() async {
@@ -226,7 +230,7 @@ class SceneRunner {
       engine.segColors([(pink.$1, pink.$2, pink.$3, _leftMask),
                         (green.$1, green.$2, green.$3, _rightMask)]);
 
-      while (!_cancelled) {
+      while (!_cancelled && _sessionId == session) {
         final now = DateTime.now().millisecondsSinceEpoch;
         var t = (now - beatStart) / beatMs;
 
