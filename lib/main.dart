@@ -121,24 +121,32 @@ class GoveeEngine {
 class SceneRunner {
   final GoveeEngine engine;
   Timer? _timer;
+  bool _cancelled = false;
   final _rng = Random();
 
   SceneRunner(this.engine);
 
-  void stop() {
+  void _stopLoop() {
+    _cancelled = true;
     _timer?.cancel();
     _timer = null;
+  }
+
+  void stop() {
+    _stopLoop();
     engine.turnOff();
   }
 
   void _loop(Duration interval, void Function() fn) {
-    _timer?.cancel();
+    _stopLoop();
+    _cancelled = false;
     fn();
     _timer = Timer.periodic(interval, (_) => fn());
   }
 
   void _loopVariable(Duration Function() onFn, Duration Function()? offFn) {
-    _timer?.cancel();
+    _stopLoop();
+    _cancelled = false;
     void tick(bool isOn) {
       final delay = isOn ? onFn() : (offFn?.call() ?? Duration.zero);
       _timer = Timer(delay, () => tick(offFn != null ? !isOn : true));
@@ -171,15 +179,34 @@ class SceneRunner {
   }
 
   void flicker() {
+    _stopLoop();
+    _cancelled = false;
     engine.turnOn();
-    _loopVariable(() {
-      engine.brightness(25 + _rng.nextInt(75));
-      engine.color(240, 230, 200);
-      return Duration(milliseconds: 40 + _rng.nextInt(160));
-    }, () {
-      engine.brightness(5 + _rng.nextInt(13));
-      return Duration(milliseconds: 10 + _rng.nextInt(60));
-    });
+    engine.segColors([(240, 230, 200, _leftMask), (240, 230, 200, _rightMask)]);
+
+    Future<void> barLoop(int mask) async {
+      while (!_cancelled) {
+        engine.segColors([(240, 230, 200, mask)]);
+        await Future.delayed(Duration(milliseconds: 3000 + _rng.nextInt(2001)));
+        if (_cancelled) break;
+
+        var remaining = 500 + _rng.nextInt(1501);
+        while (remaining > 0 && !_cancelled) {
+          final cut = min(remaining, 80 + _rng.nextInt(421));
+          engine.segColors([(2, 2, 2, mask)]);
+          await Future.delayed(Duration(milliseconds: cut));
+          remaining -= cut;
+          if (_cancelled || remaining <= 0) break;
+          engine.segColors([(240, 230, 200, mask)]);
+          await Future.delayed(Duration(milliseconds: 40 + _rng.nextInt(81)));
+        }
+
+        if (!_cancelled) engine.segColors([(240, 230, 200, mask)]);
+      }
+    }
+
+    barLoop(_leftMask);
+    barLoop(_rightMask);
   }
 
   void club() {
