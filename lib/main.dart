@@ -21,8 +21,14 @@ const _listenPort    = 4002;
 const _controlPort   = 4003;
 
 // H6047: 10 segments — 0-4 left bar, 5-9 right bar.
-const _leftMask  = 0x01F;
-const _rightMask = 0x3E0;
+const _leftMask     = 0x01F;
+const _rightMask    = 0x3E0;
+const _leftTopMask  = 0x007; // segments 0-2
+const _leftBotMask  = 0x018; // segments 3-4
+const _rightTopMask = 0x0E0; // segments 5-7
+const _rightBotMask = 0x300; // segments 8-9
+const _diagAMask    = _leftTopMask | _rightBotMask; // 0x307 — left-top + right-bottom
+const _diagBMask    = _leftBotMask | _rightTopMask; // 0x0F8 — left-bottom + right-top
 
 // ── UDP engine ────────────────────────────────────────────────────────────────
 
@@ -189,22 +195,24 @@ class SceneRunner {
 
     Future<void> barLoop(int mask) async {
       while (!_cancelled && _sessionId == session) {
-        engine.segColors([(240, 230, 200, mask)]);
-        await Future.delayed(Duration(milliseconds: 3000 + _rng.nextInt(2001)));
-        if (_cancelled || _sessionId != session) break;
-
-        var remaining = 500 + _rng.nextInt(1501);
-        while (remaining > 0 && !_cancelled && _sessionId == session) {
-          final cut = min(remaining, 80 + _rng.nextInt(421));
-          engine.segColors([(2, 2, 2, mask)]);
-          await Future.delayed(Duration(milliseconds: cut));
-          remaining -= cut;
-          if (_cancelled || _sessionId != session || remaining <= 0) break;
+        try {
           engine.segColors([(240, 230, 200, mask)]);
-          await Future.delayed(Duration(milliseconds: 40 + _rng.nextInt(81)));
-        }
+          await Future.delayed(Duration(milliseconds: 3000 + _rng.nextInt(2001)));
+          if (_cancelled || _sessionId != session) break;
 
-        if (!_cancelled && _sessionId == session) engine.segColors([(240, 230, 200, mask)]);
+          var remaining = 500 + _rng.nextInt(1501);
+          while (remaining > 0 && !_cancelled && _sessionId == session) {
+            final cut = min(remaining, 80 + _rng.nextInt(421));
+            engine.segColors([(2, 2, 2, mask)]);
+            await Future.delayed(Duration(milliseconds: cut));
+            remaining -= cut;
+            if (_cancelled || _sessionId != session || remaining <= 0) break;
+            engine.segColors([(240, 230, 200, mask)]);
+            await Future.delayed(Duration(milliseconds: 40 + _rng.nextInt(81)));
+          }
+
+          if (!_cancelled && _sessionId == session) engine.segColors([(240, 230, 200, mask)]);
+        } catch (_) {}
       }
     }
 
@@ -213,50 +221,46 @@ class SceneRunner {
   }
 
   void club() {
-    _stopLoop();
-    _cancelled = false;
-    final session = _sessionId;
     engine.turnOn();
+    engine.brightness(100);
 
-    Future<void> run() async {
-      const pink  = (255, 0, 180);
-      const green = (0, 255, 80);
-      const beatMs = 500; // 120 BPM
+    const pink   = (255, 0, 180);
+    const green  = (0, 255, 80);
+    const beatMs = 500; // 120 BPM
 
-      var leftIsPink = true;
-      var beat       = 0;
-      var beatStart  = DateTime.now().millisecondsSinceEpoch;
+    var leftIsPink = true;
+    var beat       = 0;
+    var beatStart  = DateTime.now().millisecondsSinceEpoch;
 
-      engine.segColors([(pink.$1, pink.$2, pink.$3, _leftMask),
-                        (green.$1, green.$2, green.$3, _rightMask)]);
+    _loop(const Duration(milliseconds: 20), () {
+      final now = DateTime.now().millisecondsSinceEpoch;
+      var t = (now - beatStart) / beatMs;
 
-      while (!_cancelled && _sessionId == session) {
-        final now = DateTime.now().millisecondsSinceEpoch;
-        var t = (now - beatStart) / beatMs;
-
-        if (t >= 1.0) {
-          beat       = (beat + 1) % 4;
-          beatStart  = now;
-          t          = 0.0;
-          leftIsPink = !leftIsPink;
-          final l = leftIsPink ? pink : green;
-          final r = leftIsPink ? green : pink;
-          engine.segColors([(l.$1, l.$2, l.$3, _leftMask),
-                            (r.$1, r.$2, r.$3, _rightMask)]);
-        }
-
-        // Kick (beats 0,2): punch to 100, settle to 60.
-        // Snare (beats 1,3): snap to 100, drop fast, recover to 70.
-        final brightness = beat % 2 == 0
-            ? (60 + 40 * exp(-t * 4)).round()
-            : (70 + 30 * exp(-t * 12)).round();
-
-        engine.brightness(brightness);
-        await Future.delayed(const Duration(milliseconds: 20));
+      if (t >= 1.0) {
+        beat       = (beat + 1) % 4;
+        beatStart  = now;
+        t          = 0.0;
+        leftIsPink = !leftIsPink;
       }
-    }
 
-    run();
+      // Kick (beats 0,2): punch to 100%, settle to 60%.
+      // Snare (beats 1,3): snap to 100%, drop fast, recover to 70%.
+      final scale = beat % 2 == 0
+          ? 0.60 + 0.40 * exp(-t * 4)
+          : 0.70 + 0.30 * exp(-t * 12);
+
+      // Diagonal split in 2 packets: left-top+right-bottom vs left-bottom+right-top.
+      // Two packets per ptReal keeps the command within device limits.
+      final a  = leftIsPink ? pink : green;
+      final b  = leftIsPink ? green : pink;
+      final ar = ((a.$1 * scale).round(), (a.$2 * scale).round(), (a.$3 * scale).round());
+      final br = ((b.$1 * scale).round(), (b.$2 * scale).round(), (b.$3 * scale).round());
+
+      engine.segColors([
+        (ar.$1, ar.$2, ar.$3, _diagAMask),
+        (br.$1, br.$2, br.$3, _diagBMask),
+      ]);
+    });
   }
 
   void disian() {
