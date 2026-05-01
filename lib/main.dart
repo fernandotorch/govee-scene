@@ -210,23 +210,49 @@ class SceneRunner {
   }
 
   void club() {
-    final palette = [
-      (255, 0, 140), (255, 0, 140),
-      (0, 255, 100), (0, 255, 100),
-      (160, 0, 255), (0, 200, 255),
-    ];
+    _stopLoop();
+    _cancelled = false;
     engine.turnOn();
-    _loopVariable(() {
-      if (_rng.nextDouble() < 0.07) {
-        engine.color(255, 255, 255);
-        engine.brightness(100);
-        return const Duration(milliseconds: 40);
+
+    Future<void> run() async {
+      const pink  = (255, 0, 180);
+      const green = (0, 255, 80);
+      const beatMs = 500; // 120 BPM
+
+      var leftIsPink = true;
+      var beat       = 0;
+      var beatStart  = DateTime.now().millisecondsSinceEpoch;
+
+      engine.segColors([(pink.$1, pink.$2, pink.$3, _leftMask),
+                        (green.$1, green.$2, green.$3, _rightMask)]);
+
+      while (!_cancelled) {
+        final now = DateTime.now().millisecondsSinceEpoch;
+        var t = (now - beatStart) / beatMs;
+
+        if (t >= 1.0) {
+          beat       = (beat + 1) % 4;
+          beatStart  = now;
+          t          = 0.0;
+          leftIsPink = !leftIsPink;
+          final l = leftIsPink ? pink : green;
+          final r = leftIsPink ? green : pink;
+          engine.segColors([(l.$1, l.$2, l.$3, _leftMask),
+                            (r.$1, r.$2, r.$3, _rightMask)]);
+        }
+
+        // Kick (beats 0,2): punch to 100, settle to 60.
+        // Snare (beats 1,3): snap to 100, drop fast, recover to 70.
+        final brightness = beat % 2 == 0
+            ? (60 + 40 * exp(-t * 4)).round()
+            : (70 + 30 * exp(-t * 12)).round();
+
+        engine.brightness(brightness);
+        await Future.delayed(const Duration(milliseconds: 20));
       }
-      final (r, g, b) = palette[_rng.nextInt(palette.length)];
-      engine.color(r, g, b);
-      engine.brightness(55 + _rng.nextInt(45));
-      return Duration(milliseconds: 60 + _rng.nextInt(220));
-    }, null);
+    }
+
+    run();
   }
 
   void disian() {
