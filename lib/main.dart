@@ -21,14 +21,8 @@ const _listenPort    = 4002;
 const _controlPort   = 4003;
 
 // H6047: 10 segments — 0-4 left bar, 5-9 right bar.
-const _leftMask     = 0x01F;
-const _rightMask    = 0x3E0;
-const _leftTopMask  = 0x007; // segments 0-2
-const _leftBotMask  = 0x018; // segments 3-4
-const _rightTopMask = 0x0E0; // segments 5-7
-const _rightBotMask = 0x300; // segments 8-9
-const _diagAMask    = _leftTopMask | _rightBotMask; // 0x307 — left-top + right-bottom
-const _diagBMask    = _leftBotMask | _rightTopMask; // 0x0F8 — left-bottom + right-top
+const _leftMask  = 0x01F;
+const _rightMask = 0x3E0;
 
 // ── UDP engine ────────────────────────────────────────────────────────────────
 
@@ -224,41 +218,32 @@ class SceneRunner {
     engine.turnOn();
     engine.brightness(100);
 
-    const pink   = (255, 0, 180);
-    const green  = (0, 255, 80);
-    const beatMs = 500; // 120 BPM
+    const pink     = (255, 0, 180);
+    const green    = (0, 255, 80);
+    const pulseHz  = 2.0; // brightness oscillations/sec — 120 BPM feel
 
-    var leftIsPink = true;
-    var beat       = 0;
-    var beatStart  = DateTime.now().millisecondsSinceEpoch;
+    final t0 = DateTime.now().millisecondsSinceEpoch;
+    var lColor = pink;
+    var rColor = green;
 
-    _loop(const Duration(milliseconds: 20), () {
+    // 150ms tick — 6.7 Hz ptReal, within the H6047 BLE bridge rate limit.
+    // Wall-clock sine wave so scheduling delays don't corrupt the animation.
+    _loop(const Duration(milliseconds: 150), () {
       final now = DateTime.now().millisecondsSinceEpoch;
-      var t = (now - beatStart) / beatMs;
 
-      if (t >= 1.0) {
-        beat       = (beat + 1) % 4;
-        beatStart  = now;
-        t          = 0.0;
-        leftIsPink = !leftIsPink;
-      }
+      lColor = _rng.nextBool() ? pink : green;
+      rColor = lColor == pink ? green : pink;
 
-      // Kick (beats 0,2): punch to 100%, settle to 60%.
-      // Snare (beats 1,3): snap to 100%, drop fast, recover to 70%.
-      final scale = beat % 2 == 0
-          ? 0.60 + 0.40 * exp(-t * 4)
-          : 0.70 + 0.30 * exp(-t * 12);
+      final t     = (now - t0) / 1000.0;
+      final v     = (sin(2 * pi * pulseHz * t) + 1) / 2;
+      final scale = 0.55 + 0.45 * v;
 
-      // Diagonal split in 2 packets: left-top+right-bottom vs left-bottom+right-top.
-      // Two packets per ptReal keeps the command within device limits.
-      final a  = leftIsPink ? pink : green;
-      final b  = leftIsPink ? green : pink;
-      final ar = ((a.$1 * scale).round(), (a.$2 * scale).round(), (a.$3 * scale).round());
-      final br = ((b.$1 * scale).round(), (b.$2 * scale).round(), (b.$3 * scale).round());
+      final lr = ((lColor.$1 * scale).round(), (lColor.$2 * scale).round(), (lColor.$3 * scale).round());
+      final rr = ((rColor.$1 * scale).round(), (rColor.$2 * scale).round(), (rColor.$3 * scale).round());
 
       engine.segColors([
-        (ar.$1, ar.$2, ar.$3, _diagAMask),
-        (br.$1, br.$2, br.$3, _diagBMask),
+        (lr.$1, lr.$2, lr.$3, _leftMask),
+        (rr.$1, rr.$2, rr.$3, _rightMask),
       ]);
     });
   }
