@@ -26,12 +26,16 @@ const _rightMask = 0x3E0;
 
 // ── UDP engine ────────────────────────────────────────────────────────────────
 
+const _wifiChannel = MethodChannel('com.feru.govee_scene/wifi');
+
 class GoveeEngine {
   InternetAddress? _deviceIp;
   RawDatagramSocket? _socket;
 
   Future<bool> discover() async {
     try {
+      await _wifiChannel.invokeMethod('acquireMulticastLock');
+
       final recv = await RawDatagramSocket.bind(InternetAddress.anyIPv4, _listenPort);
       final send = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
 
@@ -61,8 +65,11 @@ class GoveeEngine {
         }
       });
 
-      return completer.future;
+      final result = await completer.future;
+      await _wifiChannel.invokeMethod('releaseMulticastLock');
+      return result;
     } catch (_) {
+      await _wifiChannel.invokeMethod('releaseMulticastLock').catchError((_) {});
       return false;
     }
   }
@@ -353,7 +360,7 @@ class _TheaterScreenState extends State<TheaterScreen> {
     return ListView.separated(
       itemCount: scenes.length,
       separatorBuilder: (_, __) => const SizedBox(height: 10),
-      itemBuilder: (_, i) => _SceneButton(scene: scenes[i], active: _activeScene == scenes[i].name),
+      itemBuilder: (_, i) => _SceneButton(scene: scenes[i], active: _activeScene == scenes[i].id),
     );
   }
 }
