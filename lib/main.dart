@@ -33,43 +33,84 @@ class GoveeEngine {
   RawDatagramSocket? _socket;
 
   Future<bool> discover() async {
+    final hotspotIp = await _wifiChannel.invokeMethod<String>('getHotspotIp');
+    if (hotspotIp != null) return _hotspotScan(hotspotIp);
+    return _multicastDiscover();
+  }
+
+  Future<bool> _multicastDiscover() async {
+    RawDatagramSocket? recv;
+    RawDatagramSocket? send;
     try {
       await _wifiChannel.invokeMethod('acquireMulticastLock');
-
-      final recv = await RawDatagramSocket.bind(InternetAddress.anyIPv4, _listenPort);
-      final send = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
-
+      recv = await RawDatagramSocket.bind(InternetAddress.anyIPv4, _listenPort);
+      send = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
       final msg = jsonEncode({'msg': {'cmd': 'scan', 'data': {'account_topic': 'reserve'}}});
       send.send(utf8.encode(msg), InternetAddress(_multicastIp), _discoveryPort);
-
       final completer = Completer<bool>();
-      Timer(const Duration(seconds: 5), () {
+      Timer(const Duration(seconds: 2), () {
         if (!completer.isCompleted) {
-          recv.close();
-          send.close();
+          recv?.close(); send?.close();
           completer.complete(false);
         }
       });
-
       recv.listen((event) {
         if (event == RawSocketEvent.read) {
-          final dg = recv.receive();
+          final dg = recv?.receive();
           if (dg != null && !completer.isCompleted) {
             _deviceIp = dg.address;
             _initSocket().then((_) {
-              recv.close();
-              send.close();
+              recv?.close(); send?.close();
               completer.complete(true);
             });
           }
         }
       });
-
       final result = await completer.future;
       await _wifiChannel.invokeMethod('releaseMulticastLock');
       return result;
     } catch (_) {
+      recv?.close(); send?.close();
       await _wifiChannel.invokeMethod('releaseMulticastLock').catchError((_) {});
+      return false;
+    }
+  }
+
+  Future<bool> _hotspotScan(String hotspotIp) async {
+    final parts = hotspotIp.split('.');
+    if (parts.length != 4) return false;
+    final prefix = '${parts[0]}.${parts[1]}.${parts[2]}.';
+    RawDatagramSocket? recv;
+    RawDatagramSocket? send;
+    try {
+      recv = await RawDatagramSocket.bind(InternetAddress.anyIPv4, _listenPort);
+      send = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
+      final msg = utf8.encode(jsonEncode({'msg': {'cmd': 'scan', 'data': {'account_topic': 'reserve'}}}));
+      for (var i = 2; i <= 254; i++) {
+        send.send(msg, InternetAddress('$prefix$i'), _discoveryPort);
+      }
+      final completer = Completer<bool>();
+      Timer(const Duration(seconds: 2), () {
+        if (!completer.isCompleted) {
+          recv?.close(); send?.close();
+          completer.complete(false);
+        }
+      });
+      recv.listen((event) {
+        if (event == RawSocketEvent.read) {
+          final dg = recv?.receive();
+          if (dg != null && !completer.isCompleted) {
+            _deviceIp = dg.address;
+            _initSocket().then((_) {
+              recv?.close(); send?.close();
+              completer.complete(true);
+            });
+          }
+        }
+      });
+      return await completer.future;
+    } catch (_) {
+      recv?.close(); send?.close();
       return false;
     }
   }
@@ -382,7 +423,7 @@ class _TheaterScreenState extends State<TheaterScreen> {
           const Text('Light bar not found', style: TextStyle(fontSize: 18)),
           const SizedBox(height: 8),
           const Text(
-            'Enable LAN Control in the Govee app\nand join the same Wi-Fi network.',
+            'Enable LAN Control in the Govee app.\nWorks on Wi-Fi or phone hotspot.',
             textAlign: TextAlign.center,
             style: TextStyle(color: Colors.grey),
           ),
