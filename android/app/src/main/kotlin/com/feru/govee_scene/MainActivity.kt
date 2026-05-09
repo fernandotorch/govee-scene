@@ -1,6 +1,9 @@
 package com.feru.govee_scene
 
 import android.content.Context
+import android.content.Intent
+import android.media.AudioManager
+import android.net.Uri
 import android.net.wifi.WifiManager
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -28,6 +31,22 @@ class MainActivity : FlutterActivity() {
                         result.success(null)
                     }
                     "getHotspotIp" -> result.success(findHotspotIp())
+                    "launchSpotifyUri" -> {
+                        val uri = call.arguments as? String
+                        if (uri != null) {
+                            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(uri)).apply {
+                                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                            })
+                        }
+                        result.success(null)
+                    }
+                    "setMediaVolume" -> {
+                        val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                        val max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+                        val vol = ((call.arguments as Int) / 100.0 * max).toInt().coerceIn(0, max)
+                        am.setStreamVolume(AudioManager.STREAM_MUSIC, vol, 0)
+                        result.success(null)
+                    }
                     else -> result.notImplemented()
                 }
             }
