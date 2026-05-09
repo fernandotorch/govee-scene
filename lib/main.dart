@@ -125,6 +125,14 @@ class AudioEngine {
     await _ambientPlayer.setVolume(volume);
   }
 
+  Future<void> pauseAmbient() async {
+    await _ambientPlayer.pause();
+  }
+
+  Future<void> resumeAmbient() async {
+    await _ambientPlayer.resume();
+  }
+
   Future<void> playTrigger(String path) async {
     final player = _triggerPlayers[_triggerIndex];
     _triggerIndex = (_triggerIndex + 1) % _triggerPlayers.length;
@@ -298,6 +306,7 @@ class SceneRunner {
 
   void stop() {
     _stopLoop();
+    engine.segColors([(0, 0, 0, _leftMask | _rightMask)]);
     engine.turnOff();
   }
 
@@ -415,6 +424,36 @@ class SceneRunner {
   void dispose() => _timer?.cancel();
 }
 
+Future<void> extractAndLoadSession(BuildContext context, Uint8List zipBytes, GoveeEngine engine) async {
+  final dir = await getExternalStorageDirectory();
+  if (dir == null) return;
+  final sessionDir = Directory('${dir.path}/session');
+  if (!context.mounted) return;
+  ScaffoldMessenger.of(context).showSnackBar(ApiResponseSnackBar(message: 'Extracting session pack…'));
+  if (await sessionDir.exists()) await sessionDir.delete(recursive: true);
+  await sessionDir.create(recursive: true);
+  final archive = ZipDecoder().decodeBytes(zipBytes);
+  for (final entry in archive) {
+    if (entry.isFile) {
+      final outFile = File('${sessionDir.path}/${entry.name}');
+      await outFile.create(recursive: true);
+      await outFile.writeAsBytes(entry.content as List<int>);
+    }
+  }
+  final configFile = File('${sessionDir.path}/session.json');
+  if (await configFile.exists()) {
+    final content = await configFile.readAsString();
+    final pack = SessionPack.fromJson(jsonDecode(content), sessionDir.path);
+    if (!context.mounted) return;
+    Navigator.push(context, MaterialPageRoute(
+      builder: (_) => SessionOverviewScreen(pack: pack, engine: engine),
+    ));
+  } else {
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(ApiResponseSnackBar(message: 'Invalid pack: no session.json'));
+  }
+}
+
 // ── App ───────────────────────────────────────────────────────────────────────
 
 class GoveeApp extends StatelessWidget {
@@ -458,37 +497,82 @@ class _TheaterScreenState extends State<TheaterScreen> {
     try {
       final dir = await getExternalStorageDirectory();
       if (dir == null) return;
-      final sessionDir = Directory('${dir.path}/session');
+      final entities = await dir.list().toList();
+      final files = entities
+          .whereType<File>()
+          .where((f) => f.path.endsWith('.zip') && !f.path.endsWith('session.zip'))
+          .toList()
+        ..sort((a, b) => b.statSync().modified.compareTo(a.statSync().modified));
+      if (files.isEmpty) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            ApiResponseSnackBar(message: 'No sessions stored. Download one from Studio.'));
+        }
+        return;
+      }
+      if (!mounted) return;
 
-      final zipFile = File('${dir.path}/session.zip');
-      if (await zipFile.exists()) {
-        if (mounted) ScaffoldMessenger.of(context).showSnackBar(ApiResponseSnackBar(message: 'Extracting session pack…'));
-        if (await sessionDir.exists()) await sessionDir.delete(recursive: true);
-        await sessionDir.create(recursive: true);
-        final bytes = await zipFile.readAsBytes();
-        final archive = ZipDecoder().decodeBytes(bytes);
-        for (final entry in archive) {
-          if (entry.isFile) {
-            final outFile = File('${sessionDir.path}/${entry.name}');
-            await outFile.create(recursive: true);
-            await outFile.writeAsBytes(entry.content as List<int>);
+      final nameMap = <String, String>{};
+      for (final f in files) {
+        try {
+          final bytes = await f.readAsBytes();
+          final archive = ZipDecoder().decodeBytes(bytes);
+          ArchiveFile? jsonEntry;
+          for (final entry in archive) {
+            if (entry.name == 'session.json') { jsonEntry = entry; break; }
           }
+          if (jsonEntry != null) {
+            final data = jsonDecode(utf8.decode(jsonEntry.content as List<int>)) as Map<String, dynamic>;
+            nameMap[f.path] = data['name'] as String? ?? f.uri.pathSegments.last.replaceAll('.zip', '');
+          }
+        } catch (_) {
+          nameMap[f.path] = f.uri.pathSegments.last.replaceAll('.zip', '');
         }
       }
 
-      final configFile = File('${sessionDir.path}/session.json');
-      if (await configFile.exists()) {
-        final content = await configFile.readAsString();
-        final pack = SessionPack.fromJson(jsonDecode(content), sessionDir.path);
-        if (!mounted) return;
-        Navigator.push(context, MaterialPageRoute(
-          builder: (_) => SessionPerformanceScreen(pack: pack, engine: _engine),
-        ));
-      } else {
-        if (mounted) ScaffoldMessenger.of(context).showSnackBar(ApiResponseSnackBar(message: 'Place session.zip in /Android/data/.../files/ and try again'));
-      }
+      if (!mounted) return;
+      await showModalBottomSheet(
+        context: context,
+        backgroundColor: const Color(0xFF1A1A1A),
+        shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+        isScrollControlled: true,
+        builder: (ctx) => SizedBox(
+          height: MediaQuery.of(ctx).size.height * 0.85,
+          child: Column(
+            children: [
+              const Padding(
+                padding: EdgeInsets.fromLTRB(20, 20, 20, 12),
+                child: Text('STORED SESSIONS',
+                  style: TextStyle(fontSize: 11, letterSpacing: 1.5, color: Colors.grey)),
+              ),
+              Expanded(
+                child: ListView(
+                  children: files.map((f) {
+                    final name = nameMap[f.path] ?? f.uri.pathSegments.last.replaceAll('.zip', '');
+                    return ListTile(
+                      leading: const Icon(Icons.bolt, color: const Color(0xFF63B8DE)),
+                      title: Text(name, style: const TextStyle(fontWeight: FontWeight.bold)),
+                      onTap: () async {
+                        Navigator.pop(ctx);
+                        final bytes = await f.readAsBytes();
+                        if (!context.mounted) return;
+                        await extractAndLoadSession(context, bytes, _engine);
+                      },
+                    );
+                  }).toList(),
+                ),
+              ),
+              const SizedBox(height: 16),
+            ],
+          ),
+        ),
+      );
     } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(ApiResponseSnackBar(message: 'Error: $e'));
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          ApiResponseSnackBar(message: 'Error: $e'));
+      }
     }
   }
 
@@ -531,7 +615,7 @@ class _TheaterScreenState extends State<TheaterScreen> {
         ])),
         if (_found) GestureDetector(
           onTap: _doDiscover,
-          child: Container(width: 10, height: 10, decoration: const BoxDecoration(color: Colors.greenAccent, shape: BoxShape.circle)),
+          child: Container(width: 10, height: 10, decoration: const BoxDecoration(color: const Color(0xFF63B8DE), shape: BoxShape.circle)),
         ),
       ],
     );
@@ -560,19 +644,43 @@ class _TheaterScreenState extends State<TheaterScreen> {
             padding: const EdgeInsets.symmetric(vertical: 40),
             decoration: BoxDecoration(
               gradient: const LinearGradient(
-                colors: [Color(0xFF1a3a1a), Color(0xFF0d2a0d)],
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
+                colors: [Color(0xFF0a1a2a), Color(0xFF051a2a)],
+                begin: Alignment.topLeft, end: Alignment.bottomRight,
               ),
               borderRadius: BorderRadius.circular(20),
-              border: Border.all(color: Colors.greenAccent.withAlpha(60)),
+              border: Border.all(color: const Color(0xFF63B8DE).withAlpha(60)),
             ),
             child: const Column(children: [
-              Icon(Icons.play_circle_outline, size: 64, color: Colors.greenAccent),
+              Icon(Icons.play_circle_outline, size: 64, color: const Color(0xFF63B8DE)),
               SizedBox(height: 16),
               Text('Load Session', style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
               SizedBox(height: 6),
-              Text('Place session.zip in app storage', style: TextStyle(fontSize: 12, color: Colors.grey)),
+              Text('Tap to browse stored sessions', style: TextStyle(fontSize: 12, color: Colors.grey)),
+            ]),
+          ),
+        ),
+        const SizedBox(height: 16),
+        GestureDetector(
+          onTap: () => Navigator.push(context, MaterialPageRoute(
+            builder: (_) => StudioBrowserScreen(engine: _engine),
+          )),
+          child: Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(vertical: 28),
+            decoration: BoxDecoration(
+              gradient: const LinearGradient(
+                colors: [Color(0xFF0a1a2a), Color(0xFF051a2a)],
+                begin: Alignment.topLeft, end: Alignment.bottomRight,
+              ),
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: const Color(0xFF63B8DE).withAlpha(60)),
+            ),
+            child: const Column(children: [
+              Icon(Icons.cloud_download_outlined, size: 48, color: const Color(0xFF63B8DE)),
+              SizedBox(height: 12),
+              Text('Browse Studio', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+              SizedBox(height: 4),
+              Text('Download from local Flask server', style: TextStyle(fontSize: 12, color: Colors.grey)),
             ]),
           ),
         ),
@@ -655,6 +763,256 @@ class ApiResponseSnackBar extends SnackBar {
       : super(content: Text(message), duration: const Duration(seconds: 2));
 }
 
+class StudioBrowserScreen extends StatefulWidget {
+  final GoveeEngine engine;
+  const StudioBrowserScreen({super.key, required this.engine});
+  @override
+  State<StudioBrowserScreen> createState() => _StudioBrowserScreenState();
+}
+
+class _StudioBrowserScreenState extends State<StudioBrowserScreen> {
+  final _ipController = TextEditingController();
+  List<Map<String, String>> _packs = [];
+  bool _loading = false;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSavedIp();
+  }
+
+  @override
+  void dispose() {
+    _ipController.dispose();
+    super.dispose();
+  }
+
+  Future<File> get _prefsFile async {
+    final dir = await getApplicationDocumentsDirectory();
+    return File('${dir.path}/studio_prefs.json');
+  }
+
+  Future<void> _loadSavedIp() async {
+    try {
+      final f = await _prefsFile;
+      if (await f.exists()) {
+        final data = jsonDecode(await f.readAsString()) as Map<String, dynamic>;
+        setState(() => _ipController.text = data['ip'] as String? ?? '');
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _saveIp(String ip) async {
+    try {
+      final f = await _prefsFile;
+      await f.writeAsString(jsonEncode({'ip': ip}));
+    } catch (_) {}
+  }
+
+  Future<void> _connect() async {
+    final ip = _ipController.text.trim();
+    if (ip.isEmpty) return;
+    await _saveIp(ip);
+    setState(() { _loading = true; _error = null; _packs = []; });
+    try {
+      final client = HttpClient()..connectionTimeout = const Duration(seconds: 5);
+      final request = await client.getUrl(Uri.parse('http://$ip:5000/api/packs'));
+      final response = await request.close();
+      final body = await response.transform(utf8.decoder).join();
+      client.close();
+      if (response.statusCode == 200) {
+        final list = jsonDecode(body) as List;
+        setState(() {
+          _packs = list.map((e) => {
+            'filename': e['filename'] as String,
+            'display_name': e['display_name'] as String,
+          }).toList();
+          _loading = false;
+        });
+      } else {
+        setState(() { _error = 'Server error ${response.statusCode}'; _loading = false; });
+      }
+    } catch (e) {
+      setState(() { _error = 'Could not reach Studio: $e'; _loading = false; });
+    }
+  }
+
+  Future<void> _downloadAndLoad(String filename) async {
+    final ip = _ipController.text.trim();
+    setState(() { _loading = true; _error = null; });
+    try {
+      final client = HttpClient();
+      final request = await client.getUrl(Uri.parse('http://$ip:5000/api/packs/$filename'));
+      final response = await request.close();
+      final chunks = <List<int>>[];
+      await response.forEach((chunk) => chunks.add(chunk));
+      client.close();
+      final bytes = Uint8List.fromList(chunks.expand((x) => x).toList());
+      final saveDir = await getExternalStorageDirectory();
+      if (saveDir != null) {
+        await File('${saveDir.path}/$filename').writeAsBytes(bytes);
+      }
+      if (!mounted) return;
+      Navigator.pop(context);
+      await extractAndLoadSession(context, bytes, widget.engine);
+    } catch (e) {
+      setState(() { _error = 'Download failed: $e'; _loading = false; });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFF0E0E0E),
+      appBar: AppBar(
+        backgroundColor: const Color(0xFF1A1A1A),
+        title: const Text('Browse Studio', style: TextStyle(fontSize: 16, letterSpacing: 1)),
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('STUDIO IP', style: TextStyle(fontSize: 11, color: Colors.grey, letterSpacing: 1.5)),
+            const SizedBox(height: 8),
+            Row(children: [
+              Expanded(child: TextField(
+                controller: _ipController,
+                keyboardType: TextInputType.number,
+                style: const TextStyle(fontFamily: 'monospace'),
+                decoration: InputDecoration(
+                  hintText: '192.168.x.x',
+                  hintStyle: const TextStyle(color: Colors.white24),
+                  filled: true,
+                  fillColor: const Color(0xFF1A1A1A),
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide.none),
+                ),
+                onSubmitted: (_) => _connect(),
+              )),
+              const SizedBox(width: 12),
+              ElevatedButton(
+                onPressed: _loading ? null : _connect,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF63B8DE),
+                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+                ),
+                child: const Text('Connect', style: TextStyle(color: Colors.white)),
+              ),
+            ]),
+            const SizedBox(height: 24),
+            if (_loading) const Center(child: CircularProgressIndicator(color: const Color(0xFF63B8DE)))
+            else if (_error != null)
+              Center(child: Text(_error!, style: const TextStyle(color: Colors.redAccent)))
+            else if (_packs.isEmpty && _ipController.text.isNotEmpty)
+              const Center(child: Text('No sessions found', style: TextStyle(color: Colors.grey)))
+            else
+              Expanded(child: ListView.separated(
+                itemCount: _packs.length,
+                separatorBuilder: (_, __) => const SizedBox(height: 8),
+                itemBuilder: (_, i) {
+                  final pack = _packs[i];
+                  return GestureDetector(
+                    onTap: () => _downloadAndLoad(pack['filename']!),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF1A1A1A),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: Colors.white12),
+                      ),
+                      child: Row(children: [
+                        const Icon(Icons.bolt, color: const Color(0xFF63B8DE)),
+                        const SizedBox(width: 12),
+                        Expanded(child: Text(pack['display_name']!, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold))),
+                        const Icon(Icons.download, color: Colors.white38, size: 18),
+                      ]),
+                    ),
+                  );
+                },
+              )),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ── Session Overview Screen ───────────────────────────────────────────────────
+
+class SessionOverviewScreen extends StatelessWidget {
+  final SessionPack pack;
+  final GoveeEngine engine;
+  const SessionOverviewScreen({super.key, required this.pack, required this.engine});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFF0E0E0E),
+      appBar: AppBar(
+        backgroundColor: const Color(0xFF1A1A1A),
+        title: Text(pack.name, style: const TextStyle(fontSize: 16, letterSpacing: 0.5)),
+      ),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          GestureDetector(
+            onTap: () => Navigator.push(context, MaterialPageRoute(
+              builder: (_) => SessionPerformanceScreen(pack: pack, engine: engine),
+            )),
+            child: Container(
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(
+                  colors: [Color(0xFF0a1a2a), Color(0xFF051a2a)],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                ),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: const Color(0xFF63B8DE).withAlpha(50)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(children: [
+                    const Icon(Icons.play_circle_outline, color: const Color(0xFF63B8DE), size: 28),
+                    const SizedBox(width: 12),
+                    Expanded(child: Text(
+                      pack.name,
+                      style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                    )),
+                    Text(
+                      '${pack.arc.length} scenes',
+                      style: const TextStyle(fontSize: 12, color: Colors.white38),
+                    ),
+                  ]),
+                  const SizedBox(height: 14),
+                  ...pack.arc.asMap().entries.map((e) => Padding(
+                    padding: const EdgeInsets.only(bottom: 6),
+                    child: Row(children: [
+                      SizedBox(
+                        width: 22,
+                        child: Text('${e.key + 1}.',
+                          style: const TextStyle(fontSize: 11, color: Colors.white24),
+                          textAlign: TextAlign.right),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(child: Text(e.value.name,
+                        style: const TextStyle(fontSize: 13, color: Colors.white70))),
+                      Text(e.value.goveeRef,
+                        style: const TextStyle(fontSize: 10, color: const Color(0xFF63B8DE))),
+                    ]),
+                  )),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 // ── Session Performance Screen ────────────────────────────────────────────────
 
 class SessionPerformanceScreen extends StatefulWidget {
@@ -670,6 +1028,7 @@ class _SessionPerformanceScreenState extends State<SessionPerformanceScreen> {
   late final AudioEngine _audio;
   int _currentIndex = 0;
   double _spotifyVol = 50, _ambientVol = 50;
+  bool _isPaused = false;
 
   @override
   void initState() {
@@ -680,6 +1039,7 @@ class _SessionPerformanceScreenState extends State<SessionPerformanceScreen> {
   }
 
   Future<void> _enterScene(int index) async {
+    _isPaused = false;
     setState(() => _currentIndex = index);
     final scene = widget.pack.arc[index];
 
@@ -698,7 +1058,7 @@ class _SessionPerformanceScreenState extends State<SessionPerformanceScreen> {
 
     if (scene.spotify.uri.isNotEmpty) {
       try {
-        await _wifiChannel.invokeMethod('launchSpotifyUri', scene.spotify.uri).catchError((_) {});
+        await _wifiChannel.invokeMethod('spotifyPlay', scene.spotify.uri).catchError((_) {});
         await _wifiChannel.invokeMethod('setMediaVolume', scene.spotify.volume).catchError((_) {});
         setState(() => _spotifyVol = scene.spotify.volume.toDouble());
       } catch (_) {}
@@ -716,6 +1076,19 @@ class _SessionPerformanceScreenState extends State<SessionPerformanceScreen> {
     }
   }
 
+  void _togglePause() {
+    setState(() => _isPaused = !_isPaused);
+    if (_isPaused) {
+      _runner.stop();
+      _audio.pauseAmbient();
+      _wifiChannel.invokeMethod('spotifyPause', null).catchError((_) {});
+    } else {
+      _runner.setByRef(widget.pack.arc[_currentIndex].goveeRef);
+      _audio.resumeAmbient();
+      _wifiChannel.invokeMethod('spotifyResume', null).catchError((_) {});
+    }
+  }
+
   @override
   void dispose() { _runner.dispose(); _audio.dispose(); super.dispose(); }
 
@@ -723,7 +1096,8 @@ class _SessionPerformanceScreenState extends State<SessionPerformanceScreen> {
   Widget build(BuildContext context) {
     final scene = widget.pack.arc[_currentIndex];
     final prev = _currentIndex > 0 ? widget.pack.arc[_currentIndex - 1] : null;
-    final next = _currentIndex < widget.pack.arc.length - 1 ? widget.pack.arc[_currentIndex + 1] : null;
+    final int nextIndex = (_currentIndex + 1) % widget.pack.arc.length;
+    final next = widget.pack.arc.length > 1 ? widget.pack.arc[nextIndex] : null;
 
     return Scaffold(
       backgroundColor: Colors.black,
@@ -748,10 +1122,10 @@ class _SessionPerformanceScreenState extends State<SessionPerformanceScreen> {
                   ),
                   Expanded(child: Column(children: [
                     Text(scene.name.toUpperCase(), style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, letterSpacing: 2), textAlign: TextAlign.center),
-                    Text(scene.goveeRef, style: const TextStyle(fontSize: 10, color: Colors.greenAccent)),
+                    Text(scene.goveeRef, style: const TextStyle(fontSize: 10, color: const Color(0xFF63B8DE))),
                   ])),
                   GestureDetector(
-                    onTap: next != null ? () => _enterScene(_currentIndex + 1) : null,
+                    onTap: next != null ? () => _enterScene(nextIndex) : null,
                     child: SizedBox(
                       width: 88,
                       child: Row(mainAxisAlignment: MainAxisAlignment.end, children: [
@@ -762,6 +1136,14 @@ class _SessionPerformanceScreenState extends State<SessionPerformanceScreen> {
                     ),
                   ),
                 ],
+              ),
+            ),
+            Center(
+              child: IconButton(
+                icon: Icon(_isPaused ? Icons.play_arrow : Icons.pause, size: 32),
+                color: _isPaused ? const Color(0xFF63B8DE) : Colors.white54,
+                tooltip: _isPaused ? 'Resume' : 'Pause',
+                onPressed: _togglePause,
               ),
             ),
             const Divider(color: Colors.white12),
@@ -797,7 +1179,7 @@ class _SessionPerformanceScreenState extends State<SessionPerformanceScreen> {
                 Row(children: [
                   const Icon(Icons.music_note, size: 18, color: Colors.grey),
                   Expanded(child: Slider(
-                    value: _spotifyVol, min: 0, max: 100, activeColor: Colors.greenAccent,
+                    value: _spotifyVol, min: 0, max: 100, activeColor: const Color(0xFF63B8DE),
                     onChanged: (v) {
                       setState(() => _spotifyVol = v);
                       _wifiChannel.invokeMethod('setMediaVolume', v.round()).catchError((_) {});
@@ -808,13 +1190,13 @@ class _SessionPerformanceScreenState extends State<SessionPerformanceScreen> {
                   IconButton(
                     icon: const Icon(Icons.refresh, size: 18),
                     color: Colors.grey,
-                    onPressed: () => _wifiChannel.invokeMethod('launchSpotifyUri', scene.spotify.uri).catchError((_) {}),
+                    onPressed: () => _wifiChannel.invokeMethod('spotifyPlay', scene.spotify.uri).catchError((_) {}),
                   ),
                 ]),
                 Row(children: [
                   const Icon(Icons.waves, size: 18, color: Colors.grey),
                   Expanded(child: Slider(
-                    value: _ambientVol, min: 0, max: 100, activeColor: Colors.blueAccent,
+                    value: _ambientVol, min: 0, max: 100, activeColor: const Color(0xFF63B8DE),
                     onChanged: (v) {
                       setState(() => _ambientVol = v);
                       _audio.setAmbientVolume(v / 100.0);
