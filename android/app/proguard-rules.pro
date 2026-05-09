@@ -1,0 +1,12 @@
+-dontwarn com.fasterxml.jackson.databind.deser.std.StdDeserializer
+-dontwarn com.fasterxml.jackson.databind.ser.std.StdSerializer
+-dontwarn com.google.errorprone.annotations.FormatMethod
+-dontwarn com.google.gson.Gson
+-dontwarn com.google.gson.GsonBuilder
+-dontwarn com.google.gson.JsonArray
+-dontwarn com.google.gson.JsonDeserializer
+-dontwarn com.google.gson.JsonElement
+-dontwarn com.google.gson.JsonSerializer
+-dontwarn com.spotify.base.annotations.NotNull
+-dontwarn javax.annotation.Nonnull
+-dontwarn javax.annotation.Nullable
