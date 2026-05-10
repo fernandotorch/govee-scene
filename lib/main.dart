@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
-import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -101,7 +100,7 @@ class AudioAsset {
   final int durationMs;
   AudioAsset({required this.file, required this.durationMs});
   factory AudioAsset.fromJson(Map<String, dynamic> json) =>
-      AudioAsset(file: json['file'], durationMs: json['duration_ms']);
+      AudioAsset(file: json['file'], durationMs: json['duration_ms'] ?? 0);
 }
 
 // ── Audio Engine ──────────────────────────────────────────────────────────────
@@ -113,6 +112,19 @@ class AudioEngine {
 
   AudioEngine() {
     _ambientPlayer.setReleaseMode(ReleaseMode.loop);
+    final audioContext = AudioContext(
+      android: AudioContextAndroid(
+        isSpeakerphoneOn: false,
+        stayAwake: false,
+        contentType: AndroidContentType.music,
+        usageType: AndroidUsageType.media,
+        audioFocus: AndroidAudioFocus.none,
+      ),
+    );
+    _ambientPlayer.setAudioContext(audioContext);
+    for (final p in _triggerPlayers) {
+      p.setAudioContext(audioContext);
+    }
   }
 
   Future<void> playAmbient(String path, double volume) async {
@@ -133,11 +145,17 @@ class AudioEngine {
     await _ambientPlayer.resume();
   }
 
-  Future<void> playTrigger(String path) async {
+  double _triggerVolume = 1.0;
+
+  void setTriggerVolume(double volume) { _triggerVolume = volume; }
+
+  Future<AudioPlayer> playTrigger(String path) async {
     final player = _triggerPlayers[_triggerIndex];
     _triggerIndex = (_triggerIndex + 1) % _triggerPlayers.length;
     await player.stop();
-    await player.play(DeviceFileSource(path));
+    await player.setVolume(_triggerVolume);
+    player.play(DeviceFileSource(path)); // intentionally not awaited — return before event fires
+    return player;
   }
 
   Future<void> stopAll() async {
@@ -278,7 +296,7 @@ class GoveeEngine {
       m >>= 8;
     }
     var xor = 0;
-    for (var i = 0; i < 19; i++) xor ^= pkt[i];
+    for (var i = 0; i < 19; i++) { xor ^= pkt[i]; }
     pkt[19] = xor;
     return base64Encode(pkt);
   }
@@ -387,12 +405,14 @@ class SceneRunner {
     _loop(const Duration(milliseconds: 50), () {
       phase += 0.04;
       final v = (sin(phase) + 1) / 2;
+      final bright = (22 + v * 58) / 100.0;
       if (_rng.nextDouble() < 0.015) {
-        engine.color(200, 210, 255); engine.brightness(85);
+        engine.segColors([(170, 179, 217, _leftMask | _rightMask)]);
         return;
       }
-      engine.color((65 + v * 45).round(), 0, (105 + v * 95).round());
-      engine.brightness((22 + v * 58).round());
+      final r = ((65 + v * 45) * bright).round();
+      final b = ((105 + v * 95) * bright).round();
+      engine.segColors([(r, 0, b, _leftMask | _rightMask)]);
     });
   }
 
@@ -551,12 +571,13 @@ class _TheaterScreenState extends State<TheaterScreen> {
                   children: files.map((f) {
                     final name = nameMap[f.path] ?? f.uri.pathSegments.last.replaceAll('.zip', '');
                     return ListTile(
-                      leading: const Icon(Icons.bolt, color: const Color(0xFF63B8DE)),
+                      leading: const Icon(Icons.bolt, color: Color(0xFF63B8DE)),
                       title: Text(name, style: const TextStyle(fontWeight: FontWeight.bold)),
                       onTap: () async {
                         Navigator.pop(ctx);
                         final bytes = await f.readAsBytes();
                         if (!context.mounted) return;
+                        // ignore: use_build_context_synchronously
                         await extractAndLoadSession(context, bytes, _engine);
                       },
                     );
@@ -615,7 +636,7 @@ class _TheaterScreenState extends State<TheaterScreen> {
         ])),
         if (_found) GestureDetector(
           onTap: _doDiscover,
-          child: Container(width: 10, height: 10, decoration: const BoxDecoration(color: const Color(0xFF63B8DE), shape: BoxShape.circle)),
+          child: Container(width: 10, height: 10, decoration: const BoxDecoration(color: Color(0xFF63B8DE), shape: BoxShape.circle)),
         ),
       ],
     );
@@ -648,10 +669,10 @@ class _TheaterScreenState extends State<TheaterScreen> {
                 begin: Alignment.topLeft, end: Alignment.bottomRight,
               ),
               borderRadius: BorderRadius.circular(20),
-              border: Border.all(color: const Color(0xFF63B8DE).withAlpha(60)),
+              border: Border.all(color: Color(0xFF63B8DE).withAlpha(60)),
             ),
             child: const Column(children: [
-              Icon(Icons.play_circle_outline, size: 64, color: const Color(0xFF63B8DE)),
+              Icon(Icons.play_circle_outline, size: 64, color: Color(0xFF63B8DE)),
               SizedBox(height: 16),
               Text('Load Session', style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
               SizedBox(height: 6),
@@ -673,10 +694,10 @@ class _TheaterScreenState extends State<TheaterScreen> {
                 begin: Alignment.topLeft, end: Alignment.bottomRight,
               ),
               borderRadius: BorderRadius.circular(20),
-              border: Border.all(color: const Color(0xFF63B8DE).withAlpha(60)),
+              border: Border.all(color: Color(0xFF63B8DE).withAlpha(60)),
             ),
             child: const Column(children: [
-              Icon(Icons.cloud_download_outlined, size: 48, color: const Color(0xFF63B8DE)),
+              Icon(Icons.cloud_download_outlined, size: 48, color: Color(0xFF63B8DE)),
               SizedBox(height: 12),
               Text('Browse Studio', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
               SizedBox(height: 4),
@@ -901,7 +922,7 @@ class _StudioBrowserScreenState extends State<StudioBrowserScreen> {
               ),
             ]),
             const SizedBox(height: 24),
-            if (_loading) const Center(child: CircularProgressIndicator(color: const Color(0xFF63B8DE)))
+            if (_loading) const Center(child: CircularProgressIndicator(color: Color(0xFF63B8DE)))
             else if (_error != null)
               Center(child: Text(_error!, style: const TextStyle(color: Colors.redAccent)))
             else if (_packs.isEmpty && _ipController.text.isNotEmpty)
@@ -909,7 +930,7 @@ class _StudioBrowserScreenState extends State<StudioBrowserScreen> {
             else
               Expanded(child: ListView.separated(
                 itemCount: _packs.length,
-                separatorBuilder: (_, __) => const SizedBox(height: 8),
+                separatorBuilder: (_, _) => const SizedBox(height: 8),
                 itemBuilder: (_, i) {
                   final pack = _packs[i];
                   return GestureDetector(
@@ -922,7 +943,7 @@ class _StudioBrowserScreenState extends State<StudioBrowserScreen> {
                         border: Border.all(color: Colors.white12),
                       ),
                       child: Row(children: [
-                        const Icon(Icons.bolt, color: const Color(0xFF63B8DE)),
+                        const Icon(Icons.bolt, color: Color(0xFF63B8DE)),
                         const SizedBox(width: 12),
                         Expanded(child: Text(pack['display_name']!, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold))),
                         const Icon(Icons.download, color: Colors.white38, size: 18),
@@ -969,13 +990,13 @@ class SessionOverviewScreen extends StatelessWidget {
                   end: Alignment.bottomRight,
                 ),
                 borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: const Color(0xFF63B8DE).withAlpha(50)),
+                border: Border.all(color: Color(0xFF63B8DE).withAlpha(50)),
               ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Row(children: [
-                    const Icon(Icons.play_circle_outline, color: const Color(0xFF63B8DE), size: 28),
+                    const Icon(Icons.play_circle_outline, color: Color(0xFF63B8DE), size: 28),
                     const SizedBox(width: 12),
                     Expanded(child: Text(
                       pack.name,
@@ -1000,7 +1021,7 @@ class SessionOverviewScreen extends StatelessWidget {
                       Expanded(child: Text(e.value.name,
                         style: const TextStyle(fontSize: 13, color: Colors.white70))),
                       Text(e.value.goveeRef,
-                        style: const TextStyle(fontSize: 10, color: const Color(0xFF63B8DE))),
+                        style: const TextStyle(fontSize: 10, color: Color(0xFF63B8DE))),
                     ]),
                   )),
                 ],
@@ -1023,12 +1044,25 @@ class SessionPerformanceScreen extends StatefulWidget {
   State<SessionPerformanceScreen> createState() => _SessionPerformanceScreenState();
 }
 
-class _SessionPerformanceScreenState extends State<SessionPerformanceScreen> {
+class _SessionPerformanceScreenState extends State<SessionPerformanceScreen> with TickerProviderStateMixin {
   late final SceneRunner _runner;
   late final AudioEngine _audio;
   int _currentIndex = 0;
-  double _spotifyVol = 50, _ambientVol = 50;
+  double _spotifyVol = 50, _ambientVol = 50, _triggerVol = 80;
   bool _isPaused = false;
+  bool _hasScene = false;
+
+
+
+  Future<void> _rampAmbient(double from, double to) async {
+    const steps = 8; const stepMs = 50;
+    for (int i = 1; i <= steps; i++) {
+      final v = from + (to - from) * i / steps;
+      await _audio.setAmbientVolume(v);
+      if (i < steps) await Future.delayed(const Duration(milliseconds: stepMs));
+    }
+  }
+  final Map<int, AnimationController> _activeTriggers = {};
 
   @override
   void initState() {
@@ -1040,39 +1074,76 @@ class _SessionPerformanceScreenState extends State<SessionPerformanceScreen> {
 
   Future<void> _enterScene(int index) async {
     _isPaused = false;
-    setState(() => _currentIndex = index);
     final scene = widget.pack.arc[index];
 
+    // Fade out ambient only — do not touch Spotify volume (causes bell + hangs)
+    if (_hasScene) {
+      await _rampAmbient(_ambientVol / 100.0, 0.0);
+    }
+    _hasScene = true;
+
+    setState(() => _currentIndex = index);
     _runner.setByRef(scene.goveeRef);
 
+    // Switch ambient track at silence
     if (scene.ambientId != null) {
       final asset = widget.pack.audioManifest[scene.ambientId];
       if (asset != null) {
         final path = '${widget.pack.directoryPath}/${asset.file}';
-        await _audio.playAmbient(path, scene.ambientVolume / 100.0);
-        setState(() => _ambientVol = scene.ambientVolume.toDouble());
+        await _audio.playAmbient(path, 0.0);
       }
     } else {
       await _audio.setAmbientVolume(0);
     }
 
+    // Switch Spotify instantly then set target volume in one call
     if (scene.spotify.uri.isNotEmpty) {
-      try {
-        await _wifiChannel.invokeMethod('spotifyPlay', scene.spotify.uri).catchError((_) {});
-        await _wifiChannel.invokeMethod('setMediaVolume', scene.spotify.volume).catchError((_) {});
-        setState(() => _spotifyVol = scene.spotify.volume.toDouble());
-      } catch (_) {}
+      await _wifiChannel.invokeMethod('spotifyPlay', scene.spotify.uri).catchError((_) {});
+      await _wifiChannel.invokeMethod('setSpotifyVolume', scene.spotify.volume).catchError((_) {});
+      setState(() => _spotifyVol = scene.spotify.volume.toDouble());
     }
+
+    // Fade ambient in
+    final targetAmbient = scene.ambientId != null ? scene.ambientVolume / 100.0 : 0.0;
+    await _rampAmbient(0.0, targetAmbient);
+    setState(() => _ambientVol = scene.ambientVolume.toDouble());
   }
 
-  void _fireTrigger(Trigger t) {
+  void _fireTrigger(Trigger t, int index) async {
     HapticFeedback.lightImpact();
-    final asset = widget.pack.audioManifest[t.soundId];
-    if (asset != null) {
-      _audio.playTrigger('${widget.pack.directoryPath}/${asset.file}');
+    if (t.soundId.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No sound assigned to this trigger')));
+      return;
     }
-    if (t.flashRef != null) {
-      _runner.flash(t.flashRef);
+    final asset = widget.pack.audioManifest[t.soundId];
+    if (asset == null) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Sound not found: ${t.soundId}')));
+      return;
+    }
+    if (t.flashRef != null) _runner.flash(t.flashRef);
+
+    final path = '${widget.pack.directoryPath}/${asset.file}';
+    try {
+      final ctrl = AnimationController(vsync: this, duration: const Duration(seconds: 10));
+      _activeTriggers[index]?.dispose();
+      setState(() => _activeTriggers[index] = ctrl);
+
+      final player = await _audio.playTrigger(path);
+
+      Future.any([
+        player.onDurationChanged.first,
+        Future.delayed(const Duration(milliseconds: 500), () => Duration.zero),
+      ]).then((d) {
+        if (!mounted) return;
+        ctrl.duration = d.inMilliseconds > 0 ? d : const Duration(seconds: 5);
+        ctrl.forward();
+      });
+
+      player.onPlayerComplete.first.then((_) {
+        if (mounted) setState(() => _activeTriggers.remove(index)?.dispose());
+      });
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Playback error: $e')));
     }
   }
 
@@ -1090,7 +1161,12 @@ class _SessionPerformanceScreenState extends State<SessionPerformanceScreen> {
   }
 
   @override
-  void dispose() { _runner.dispose(); _audio.dispose(); super.dispose(); }
+  void dispose() {
+    for (final c in _activeTriggers.values) { c.dispose(); }
+    _runner.dispose();
+    _audio.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1122,7 +1198,7 @@ class _SessionPerformanceScreenState extends State<SessionPerformanceScreen> {
                   ),
                   Expanded(child: Column(children: [
                     Text(scene.name.toUpperCase(), style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, letterSpacing: 2), textAlign: TextAlign.center),
-                    Text(scene.goveeRef, style: const TextStyle(fontSize: 10, color: const Color(0xFF63B8DE))),
+                    Text(scene.goveeRef, style: const TextStyle(fontSize: 10, color: Color(0xFF63B8DE))),
                   ])),
                   GestureDetector(
                     onTap: next != null ? () => _enterScene(nextIndex) : null,
@@ -1157,13 +1233,31 @@ class _SessionPerformanceScreenState extends State<SessionPerformanceScreen> {
                 itemCount: scene.triggers.length,
                 itemBuilder: (_, i) {
                   final t = scene.triggers[i];
-                  return ElevatedButton(
-                    onPressed: () => _fireTrigger(t),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFF1A1A1A),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                    ),
-                    child: Text(t.name, textAlign: TextAlign.center, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                  return Stack(
+                    children: [
+                      SizedBox.expand(
+                        child: ElevatedButton(
+                          onPressed: () => _fireTrigger(t, i),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF1A1A1A),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          ),
+                          child: Text(t.name, textAlign: TextAlign.center, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                        ),
+                      ),
+                      if (_activeTriggers.containsKey(i))
+                        Positioned.fill(
+                          child: IgnorePointer(
+                            child: AnimatedBuilder(
+                              animation: _activeTriggers[i]!,
+                              builder: (_, _) => CustomPaint(
+                                painter: _TriggerBorderPainter(_activeTriggers[i]!.value),
+                                child: const SizedBox.expand(),
+                              ),
+                            ),
+                          ),
+                        ),
+                    ],
                   );
                 },
               ),
@@ -1182,7 +1276,7 @@ class _SessionPerformanceScreenState extends State<SessionPerformanceScreen> {
                     value: _spotifyVol, min: 0, max: 100, activeColor: const Color(0xFF63B8DE),
                     onChanged: (v) {
                       setState(() => _spotifyVol = v);
-                      _wifiChannel.invokeMethod('setMediaVolume', v.round()).catchError((_) {});
+                      _wifiChannel.invokeMethod('setSpotifyVolume', v.round()).catchError((_) {});
                     },
                   )),
                   Text('${_spotifyVol.round()}%', style: const TextStyle(fontSize: 12, color: Colors.grey)),
@@ -1205,6 +1299,18 @@ class _SessionPerformanceScreenState extends State<SessionPerformanceScreen> {
                   Text('${_ambientVol.round()}%', style: const TextStyle(fontSize: 12, color: Colors.grey)),
                   const SizedBox(width: 44),
                 ]),
+                Row(children: [
+                  const Icon(Icons.bolt, size: 18, color: Colors.grey),
+                  Expanded(child: Slider(
+                    value: _triggerVol, min: 0, max: 100, activeColor: const Color(0xFF63B8DE),
+                    onChanged: (v) {
+                      setState(() => _triggerVol = v);
+                      _audio.setTriggerVolume(v / 100.0);
+                    },
+                  )),
+                  Text('${_triggerVol.round()}%', style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                  const SizedBox(width: 44),
+                ]),
               ]),
             ),
           ],
@@ -1212,4 +1318,30 @@ class _SessionPerformanceScreenState extends State<SessionPerformanceScreen> {
       ),
     );
   }
+}
+
+class _TriggerBorderPainter extends CustomPainter {
+  final double progress;
+  _TriggerBorderPainter(this.progress);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (progress <= 0) return;
+    final paint = Paint()
+      ..color = const Color(0xFF63B8DE)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3
+      ..strokeCap = StrokeCap.butt;
+    final rrect = RRect.fromRectAndRadius(
+      Rect.fromLTWH(1.5, 1.5, size.width - 3, size.height - 3),
+      const Radius.circular(12),
+    );
+    final path = Path()..addRRect(rrect);
+    final metrics = path.computeMetrics().first;
+    final drawn = metrics.extractPath(0, metrics.length * progress.clamp(0, 1));
+    canvas.drawPath(drawn, paint);
+  }
+
+  @override
+  bool shouldRepaint(_TriggerBorderPainter old) => old.progress != progress;
 }
