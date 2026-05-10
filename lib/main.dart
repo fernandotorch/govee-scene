@@ -1048,7 +1048,8 @@ class _SessionPerformanceScreenState extends State<SessionPerformanceScreen> wit
   late final SceneRunner _runner;
   late final AudioEngine _audio;
   int _currentIndex = 0;
-  double _spotifyVol = 50, _ambientVol = 50, _triggerVol = 80;
+  double _ambientVol = 50, _triggerVol = 80;
+  bool _spotifyPaused = false;
   bool _isPaused = false;
   bool _hasScene = false;
 
@@ -1099,8 +1100,7 @@ class _SessionPerformanceScreenState extends State<SessionPerformanceScreen> wit
     // Switch Spotify instantly then set target volume in one call
     if (scene.spotify.uri.isNotEmpty) {
       await _wifiChannel.invokeMethod('spotifyPlay', scene.spotify.uri).catchError((_) {});
-      await _wifiChannel.invokeMethod('setSpotifyVolume', scene.spotify.volume).catchError((_) {});
-      setState(() => _spotifyVol = scene.spotify.volume.toDouble());
+      setState(() => _spotifyPaused = false);
     }
 
     // Fade ambient in
@@ -1156,6 +1156,15 @@ class _SessionPerformanceScreenState extends State<SessionPerformanceScreen> wit
     } else {
       _runner.setByRef(widget.pack.arc[_currentIndex].goveeRef);
       _audio.resumeAmbient();
+      _wifiChannel.invokeMethod('spotifyResume', null).catchError((_) {});
+    }
+  }
+
+  void _toggleSpotify() {
+    setState(() => _spotifyPaused = !_spotifyPaused);
+    if (_spotifyPaused) {
+      _wifiChannel.invokeMethod('spotifyPause', null).catchError((_) {});
+    } else {
       _wifiChannel.invokeMethod('spotifyResume', null).catchError((_) {});
     }
   }
@@ -1272,20 +1281,20 @@ class _SessionPerformanceScreenState extends State<SessionPerformanceScreen> wit
               child: Column(children: [
                 Row(children: [
                   const Icon(Icons.music_note, size: 18, color: Colors.grey),
-                  Expanded(child: Slider(
-                    value: _spotifyVol, min: 0, max: 100, activeColor: const Color(0xFF63B8DE),
-                    onChanged: (v) {
-                      setState(() => _spotifyVol = v);
-                      _wifiChannel.invokeMethod('setSpotifyVolume', v.round()).catchError((_) {});
-                    },
-                  )),
-                  Text('${_spotifyVol.round()}%', style: const TextStyle(fontSize: 12, color: Colors.grey)),
-                  const SizedBox(width: 8),
-                  IconButton(
-                    icon: const Icon(Icons.refresh, size: 18),
-                    color: Colors.grey,
-                    onPressed: () => _wifiChannel.invokeMethod('spotifyPlay', scene.spotify.uri).catchError((_) {}),
+                  const Expanded(
+                    child: Text('Spotify', style: TextStyle(fontSize: 12, color: Colors.grey)),
                   ),
+                  IconButton(
+                    icon: Icon(
+                      _spotifyPaused ? Icons.play_arrow : Icons.pause,
+                      size: 20,
+                    ),
+                    color: _spotifyPaused ? const Color(0xFF63B8DE) : Colors.grey,
+                    onPressed: _toggleSpotify,
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
+                  ),
+                  const SizedBox(width: 24),
                 ]),
                 Row(children: [
                   const Icon(Icons.waves, size: 18, color: Colors.grey),
