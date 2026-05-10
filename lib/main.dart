@@ -29,17 +29,17 @@ const _rightMask = 0x3E0;
 
 class SessionPack {
   final String name;
-  final List<SessionScene> arc;
+  final List<SessionScene> scenes;
   final Map<String, AudioAsset> audioManifest;
   final String directoryPath;
 
-  SessionPack({required this.name, required this.arc, required this.audioManifest, required this.directoryPath});
+  SessionPack({required this.name, required this.scenes, required this.audioManifest, required this.directoryPath});
 
   factory SessionPack.fromJson(Map<String, dynamic> json, String dirPath) {
     return SessionPack(
       name: json['name'],
       directoryPath: dirPath,
-      arc: (json['arc'] as List).map((s) => SessionScene.fromJson(s)).toList(),
+      scenes: (json['scenes'] as List).map((s) => SessionScene.fromJson(s)).toList(),
       audioManifest: (json['audio_manifest'] as Map<String, dynamic>).map(
         (k, v) => MapEntry(k, AudioAsset.fromJson(v))
       ),
@@ -1003,12 +1003,12 @@ class SessionOverviewScreen extends StatelessWidget {
                       style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                     )),
                     Text(
-                      '${pack.arc.length} scenes',
+                      '${pack.scenes.length} scenes',
                       style: const TextStyle(fontSize: 12, color: Colors.white38),
                     ),
                   ]),
                   const SizedBox(height: 14),
-                  ...pack.arc.asMap().entries.map((e) => Padding(
+                  ...pack.scenes.asMap().entries.map((e) => Padding(
                     padding: const EdgeInsets.only(bottom: 6),
                     child: Row(children: [
                       SizedBox(
@@ -1075,7 +1075,7 @@ class _SessionPerformanceScreenState extends State<SessionPerformanceScreen> wit
 
   Future<void> _enterScene(int index) async {
     _isPaused = false;
-    final scene = widget.pack.arc[index];
+    final scene = widget.pack.scenes[index];
 
     // Fade out ambient only — do not touch Spotify volume (causes bell + hangs)
     if (_hasScene) {
@@ -1154,7 +1154,7 @@ class _SessionPerformanceScreenState extends State<SessionPerformanceScreen> wit
       _audio.pauseAmbient();
       _wifiChannel.invokeMethod('spotifyPause', null).catchError((_) {});
     } else {
-      _runner.setByRef(widget.pack.arc[_currentIndex].goveeRef);
+      _runner.setByRef(widget.pack.scenes[_currentIndex].goveeRef);
       _audio.resumeAmbient();
       _wifiChannel.invokeMethod('spotifyResume', null).catchError((_) {});
     }
@@ -1179,17 +1179,17 @@ class _SessionPerformanceScreenState extends State<SessionPerformanceScreen> wit
 
   @override
   Widget build(BuildContext context) {
-    final scene = widget.pack.arc[_currentIndex];
-    final prev = _currentIndex > 0 ? widget.pack.arc[_currentIndex - 1] : null;
-    final int nextIndex = (_currentIndex + 1) % widget.pack.arc.length;
-    final next = widget.pack.arc.length > 1 ? widget.pack.arc[nextIndex] : null;
+    final scene = widget.pack.scenes[_currentIndex];
+    final prev = _currentIndex > 0 ? widget.pack.scenes[_currentIndex - 1] : null;
+    final int nextIndex = (_currentIndex + 1) % widget.pack.scenes.length;
+    final next = widget.pack.scenes.length > 1 ? widget.pack.scenes[nextIndex] : null;
 
     return Scaffold(
       backgroundColor: Colors.black,
       body: SafeArea(
         child: Column(
           children: [
-            // Arc Nav
+            // Scene Nav
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
               child: Row(

@@ -6,7 +6,7 @@ Android app for running Govee H6047 RGBIC light bar effects during tabletop RPG 
 
 A session pack is a ZIP exported from Studio with:
 
-- **Arc** — ordered list of scenes, each with a Govee light effect, a Spotify playlist URI, and an optional ambient loop
+- **Scenes** — ordered list of scenes, each with a Govee light effect, a Spotify playlist URI, and an optional ambient loop
 - **Trigger sounds** — one-shot audio files (OGG/MP3) assigned to tap buttons on the performance screen
 - **Ambient loops** — background audio (rain, crowd, etc.) that crossfades between scenes
 - **session.json** — manifest linking everything together
@@ -15,7 +15,7 @@ A session pack is a ZIP exported from Studio with:
 
 1. **Load** — browse your local Flask Studio server or pick a stored ZIP
 2. **Discover** — app finds the H6047 via UDP multicast or hotspot scan
-3. **Navigate** — swipe left/right through arc scenes; each scene fires the light effect, Spotify playlist, and ambient loop automatically
+3. **Navigate** — swipe left/right through scenes; each scene fires the light effect, Spotify playlist, and ambient loop automatically
 4. **Trigger** — tap trigger buttons to fire one-shot sounds and light flashes
 5. **Mix** — three sliders: Spotify volume, ambient volume, trigger volume
 
@@ -44,7 +44,7 @@ Tries hotspot scan first (`getHotspotIp` via the WiFi channel), falls back to UD
 
 - **Ambient**: looping `audioplayers` player, software gain independent of system volume. Uses `AudioFocus.none` so Spotify is not interrupted.
 - **Triggers**: pool of 6 `audioplayers` instances, round-robin. Same audio focus config.
-- **Spotify**: controlled via Spotify App Remote SDK. Volume is controlled via system media volume.
+- **Spotify**: playback controlled via Web API (PKCE auth). Volume is system media volume — use hardware buttons at runtime.
 
 
 ## Build
@@ -63,10 +63,6 @@ The H6047 has 10 physical segments — 5 per bar — addressed via bitmask in `p
 ```dart
 const _leftMask  = 0x01F;  // segments 0-4
 const _rightMask = 0x3E0;  // segments 5-9
-```
-
-Swap if bars feel reversed.
-tMask = 0x3E0;  // segments 5-9
 ```
 
 Swap if bars feel reversed.
