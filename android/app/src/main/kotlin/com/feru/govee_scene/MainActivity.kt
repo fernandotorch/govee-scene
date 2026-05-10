@@ -58,6 +58,13 @@ class MainActivity : FlutterActivity() {
                         am.setStreamVolume(AudioManager.STREAM_MUSIC, vol, 0)
                         result.success(null)
                     }
+                    "setSpotifyVolume" -> {
+                        val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                        val max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+                        val vol = ((call.arguments as Int) / 100.0 * max).toInt().coerceIn(0, max)
+                        am.setStreamVolume(AudioManager.STREAM_MUSIC, vol, 0)
+                        result.success(null)
+                    }
                     "spotifyPlay" -> {
                         val uri = call.arguments as? String ?: run { result.success(null); return@setMethodCallHandler }
                         val spotifyUri = toSpotifyUri(uri)
