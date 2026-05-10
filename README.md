@@ -44,7 +44,8 @@ Tries hotspot scan first (`getHotspotIp` via the WiFi channel), falls back to UD
 
 - **Ambient**: looping `audioplayers` player, software gain independent of system volume. Uses `AudioFocus.none` so Spotify is not interrupted.
 - **Triggers**: pool of 6 `audioplayers` instances, round-robin. Same audio focus config.
-- **Spotify**: controlled via Spotify App Remote SDK (local Android module). Volume slider currently uses `AudioManager.setStreamVolume`; Web API decoupling is planned.
+- **Spotify**: controlled via Spotify App Remote SDK. Volume is controlled via system media volume.
+
 
 ## Build
 
@@ -62,6 +63,10 @@ The H6047 has 10 physical segments — 5 per bar — addressed via bitmask in `p
 ```dart
 const _leftMask  = 0x01F;  // segments 0-4
 const _rightMask = 0x3E0;  // segments 5-9
+```
+
+Swap if bars feel reversed.
+tMask = 0x3E0;  // segments 5-9
 ```
 
 Swap if bars feel reversed.
