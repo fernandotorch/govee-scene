@@ -429,16 +429,135 @@ class SceneRunner {
     }
   }
 
+  void torches() {
+    engine.turnOn(); engine.brightness(100);
+    var t = 0.0;
+    _loop(const Duration(milliseconds: 120), () {
+      t += 0.25;
+      final packet = <(int, int, int, int)>[];
+      final wind = 0.8 * sin(t * 1.2) + 0.4 * sin(t * 2.8);
+      
+      for (var h = 0; h < 5; h++) {
+        var (br, bg, bb) = (0, 0, 0);
+        if (h == 0)      { br = 180; bg = 15;  bb = 0;   }
+        else if (h == 1) { br = 220; bg = 55;  bb = 0;   }
+        else if (h == 2) { br = 255; bg = 120; bb = 0;   }
+        else if (h == 3) { br = 255; bg = 190; bb = 40;  }
+        else             { br = 255; bg = 240; bb = 150; }
+        
+        for (var isRight in [false, true]) {
+          final mask = 1 << (h + (isRight ? 5 : 0));
+          final barPhase = isRight ? 2.5 : 0.0;
+          final flicker = sin(t * 2.5 + barPhase + h * 0.8);
+          final sway = isRight ? wind : -wind;
+          
+          double intensity;
+          if (h >= 3) {
+            final snap = ((isRight && wind < -0.5) || (!isRight && wind > 0.5)) ? 0.0 : 1.0;
+            final agitation = (flicker * 0.7 + 0.3) * snap;
+            intensity = agitation * (1.0 + sway.abs() * 0.5);
+          } else {
+            final glow = (flicker * 0.3 + 0.7);
+            intensity = glow * (0.9 + sway.abs() * 0.1);
+          }
+          
+          if (h >= 2 && _rng.nextDouble() < 0.12) {
+            intensity *= (1.3 + _rng.nextDouble() * 0.4);
+          }
+          
+          packet.add(((br * intensity).round(), (bg * intensity).round(), (bb * intensity).round(), mask));
+        }
+      }
+      engine.segColors(packet);
+    });
+  }
+
+  void purpleEvil() {
+    _stopLoop(); _cancelled = false;
+    final session = _sessionId;
+    engine.turnOn(); engine.brightness(100);
+    
+    Future<void> animation() async {
+      var t = 0.0;
+      while (!_cancelled && _sessionId == session) {
+        if (_rng.nextDouble() < 0.06) {
+          final roll = _rng.nextDouble();
+          if (roll < 0.40) {
+            engine.segColors([(0, 0, 0, _leftMask | _rightMask)]);
+            await Future.delayed(Duration(milliseconds: 300 + _rng.nextInt(301)));
+            if (_cancelled || _sessionId != session) break;
+            engine.segColors([(255, 0, 0, _leftMask | _rightMask)]);
+            await Future.delayed(Duration(milliseconds: 200 + _rng.nextInt(201)));
+          } else if (roll < 0.70) {
+            engine.segColors([(255, 0, 0, _leftMask | _rightMask)]);
+            await Future.delayed(Duration(milliseconds: 150 + _rng.nextInt(151)));
+            if (_cancelled || _sessionId != session) break;
+            engine.segColors([(0, 0, 0, _leftMask | _rightMask)]);
+            await Future.delayed(Duration(milliseconds: 400 + _rng.nextInt(401)));
+          } else if (roll < 0.90) {
+            engine.segColors([(255, 0, 0, _leftMask | _rightMask)]);
+            await Future.delayed(Duration(milliseconds: 200 + _rng.nextInt(301)));
+          } else {
+            engine.segColors([(0, 0, 0, _leftMask | _rightMask)]);
+            await Future.delayed(Duration(milliseconds: 300 + _rng.nextInt(401)));
+          }
+          continue;
+        }
+
+        t += 0.3;
+        final wind = 0.8 * sin(t * 1.2) + 0.4 * sin(t * 2.8);
+        final packet = <(int, int, int, int)>[];
+        
+        for (var h = 0; h < 5; h++) {
+          if (h == 0)      { br = 40;  bg = 0;  bb = 90;  }
+          else if (h == 1) { br = 100; bg = 0;  bb = 200; }
+          else if (h == 2) { br = 255; bg = 0;  bb = 150; }
+          else if (h == 3) { br = 230; bg = 230; bb = 255; }
+          else             { br = 255; bg = 10; bb = 0;   }
+          
+          for (var isRight in [false, true]) {
+            final mask = 1 << (h + (isRight ? 5 : 0));
+            final barPhase = isRight ? 2.5 : 0.0;
+            final flicker = sin(t * 2.5 + barPhase + h * 0.8);
+            final sway = isRight ? wind : -wind;
+            
+            double intensity;
+            if (h >= 3) {
+              final snap = ((isRight && wind < -0.5) || (!isRight && wind > 0.5)) ? 0.0 : 1.0;
+              final agitation = (flicker * 0.7 + 0.3) * snap;
+              intensity = agitation * (1.0 + sway.abs() * 0.5);
+            } else {
+              final glow = (flicker * 0.3 + 0.7);
+              intensity = glow * (0.9 + sway.abs() * 0.1);
+            }
+            
+            if (h >= 2 && _rng.nextDouble() < 0.12) {
+              intensity *= (1.3 + _rng.nextDouble() * 0.4);
+            }
+            packet.add(((br * intensity).round(), (bg * intensity).round(), (bb * intensity).round(), mask));
+          }
+        }
+        engine.segColors(packet);
+        await Future.delayed(const Duration(milliseconds: 120));
+      }
+    }
+    animation();
+  }
+
   void setByRef(String ref) {
     switch (ref) {
-      case 'police':  police();  break;
-      case 'alarm':   alarm();   break;
-      case 'club':    club();    break;
-      case 'flicker': flicker(); break;
-      case 'disian':  disian();  break;
-      case 'off':     stop();    break;
+      case 'police':    police();    break;
+      case 'alarm':     alarm();     break;
+      case 'club':      club();      break;
+      case 'flicker':   flicker();   break;
+      case 'disian':    disian();    break;
+      case 'brave-sea': braveSea();  break;
+      case 'torches':   torches();   break;
+      case 'evil':      purpleEvil(); break;
+      case 'off':       stop();      break;
       default: engine.turnOn(); engine.color(200, 200, 200); engine.brightness(50);
     }
+  }
   }
 
   void dispose() => _timer?.cancel();
@@ -734,12 +853,15 @@ class _EffectsPanel extends StatelessWidget {
   const _EffectsPanel({required this.runner});
 
   static const _effects = [
-    ('off',     'Off',             'Kill all effects',        [Color(0xFF2a2a2a), Color(0xFF1a1a1a)], Colors.grey),
-    ('police',  'Police Siren',    'Red / blue rotating',     [Color(0xFFCC0000), Color(0xFF0033DD)], Colors.white),
-    ('alarm',   'Emergency Alarm', 'Orange rotating beacon',  [Color(0xFF7a2800), Color(0xFF3a1000)], Color(0xFFFFAA44)),
-    ('club',    'Techno Club',     'Pink & green strobe',     [Color(0xFFCC006E), Color(0xFF00CC66)], Colors.white),
-    ('flicker', 'Flickering',      'Damaged fluorescent',     [Color(0xFF3a3020), Color(0xFF1a1808)], Color(0xFFD4C080)),
-    ('disian',  'Disian',          'Deep purple — metaplane', [Color(0xFF1a0033), Color(0xFF330055)], Color(0xFFCCAAFF)),
+    ('off',       'Off',             'Kill all effects',        [Color(0xFF2a2a2a), Color(0xFF1a1a1a)], Colors.grey),
+    ('police',    'Police Siren',    'Red / blue rotating',     [Color(0xFFCC0000), Color(0xFF0033DD)], Colors.white),
+    ('alarm',     'Emergency Alarm', 'Orange rotating beacon',  [Color(0xFF7a2800), Color(0xFF3a1000)], Color(0xFFFFAA44)),
+    ('brave-sea', 'Brave Sea',      'High-action oceanic',     [Color(0xFF00021e), Color(0xFF001e3c)], Color(0xFF63B8DE)),
+    ('torches',   'Torch Fire',      'Independent fire flickers', [Color(0xFF3a1000), Color(0xFF7a2800)], Color(0xFFFFAA44)),
+    ('evil',      'Torch Fire Evil', 'Malevolent purple flames', [Color(0xFF1a0033), Color(0xFF660099)], Color(0xFFFF00FF)),
+    ('club',      'Techno Club',     'Pink & green strobe',     [Color(0xFFCC006E), Color(0xFF00CC66)], Colors.white),
+    ('flicker',   'Flickering',      'Damaged fluorescent',     [Color(0xFF3a3020), Color(0xFF1a1808)], Color(0xFFD4C080)),
+    ('disian',    'Disian',          'Deep purple — metaplane', [Color(0xFF1a0033), Color(0xFF330055)], Color(0xFFCCAAFF)),
   ];
 
   @override
