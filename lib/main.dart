@@ -78,9 +78,14 @@ class SessionScene {
 class SpotifyConfig {
   final String uri;
   final int volume;
-  SpotifyConfig({required this.uri, required this.volume});
+  final int startTime;
+  SpotifyConfig({required this.uri, required this.volume, this.startTime = 0});
   factory SpotifyConfig.fromJson(Map<String, dynamic> json) =>
-      SpotifyConfig(uri: json['uri'] ?? '', volume: json['volume'] ?? 50);
+      SpotifyConfig(
+        uri: json['uri'] ?? '',
+        volume: json['volume'] ?? 50,
+        startTime: json['start_time'] ?? 0,
+      );
 }
 
 class Trigger {
@@ -177,11 +182,13 @@ class AudioEngine {
 
 const _wifiChannel = MethodChannel('com.feru.govee_scene/wifi');
 
-class GoveeEngine {
-  InternetAddress? _deviceIp;
+class GoveeEngine extends ChangeNotifier {
+  InternetAddress? _deviceIp; bool _isDiscovering = false; bool get isDiscovering => _isDiscovering; bool get hasDevice => _deviceIp != null;
   RawDatagramSocket? _socket;
 
   Future<bool> discover() async {
+    _isDiscovering = true; notifyListeners();
+    _isDiscovering = true; notifyListeners();
     try {
       final hotspotIp = await _wifiChannel.invokeMethod<String>('getHotspotIp');
       if (hotspotIp != null) return _hotspotScan(hotspotIp);
@@ -265,21 +272,54 @@ class GoveeEngine {
     }
   }
 
+  Future<void>? _initFuture;
   Future<void> _initSocket() async {
-    _socket?.close();
-    _socket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
+    if (_initFuture != null) return _initFuture;
+    final completer = Completer<void>();
+    _initFuture = completer.future;
+    try {
+      _socket?.close();
+      _socket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
+      completer.complete();
+    } catch (e) {
+      completer.completeError(e);
+    } finally {
+      _initFuture = null;
+    }
+    return completer.future;
   }
+
+  int _errorCount = 0;
+  DateTime _lastSend = DateTime.fromMillisecondsSinceEpoch(0);
 
   void _send(Map<String, dynamic> cmd) {
     if (_deviceIp == null) return;
-    if (_socket == null) { _initSocket().then((_) => _send(cmd)); return; }
+    
+    // Rate limit to prevent clogging the device (max ~15-20 Hz)
+    final now = DateTime.now();
+    if (now.difference(_lastSend).inMilliseconds < 40) return;
+    _lastSend = now;
+
+    if (_socket == null) {
+      _initSocket().then((_) => _send(cmd)).catchError((_) {});
+      return;
+    }
     try {
       final payload = utf8.encode(jsonEncode({"msg": cmd}));
-      _socket!.send(payload, _deviceIp!, _controlPort);
+      final sent = _socket!.send(payload, _deviceIp!, _controlPort);
+      if (sent <= 0) {
+        _errorCount++;
+        if (_errorCount > 5) {
+          _errorCount = 0;
+          _initSocket();
+        }
+      } else {
+        _errorCount = 0;
+      }
     } catch (_) {
-      _initSocket().then((_) => _send(cmd));
+      _errorCount++;
+      _initSocket().then((_) => _send(cmd)).catchError((_) {});
     }
-    final payload = utf8.encode(jsonEncode({'msg': cmd}));
   }
 
   void turnOn()                   => _send({'cmd': 'turn',       'data': {'value': 1}});
@@ -670,16 +710,30 @@ class _TheaterScreenState extends State<TheaterScreen> with WidgetsBindingObserv
   bool _discovering = true;
   bool _found = false;
 
+  Timer? _spotifyTimer;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _runner = SceneRunner(_engine);
     _doDiscover();
+    _connectSpotify();
+    _spotifyTimer = Timer.periodic(const Duration(minutes: 10), (_) => _refreshSpotify());
+  }
+
+  void _connectSpotify() {
+    _wifiChannel.invokeMethod('spotifyConnect');
+  }
+
+  void _refreshSpotify() {
+    _wifiChannel.invokeMethod('spotifyRefresh');
   }
 
   @override
   void dispose() {
+    _spotifyTimer?.cancel();
+    _wifiChannel.invokeMethod('spotifyDisconnect');
     WidgetsBinding.instance.removeObserver(this);
     _runner.dispose();
     _engine.dispose();
@@ -688,8 +742,9 @@ class _TheaterScreenState extends State<TheaterScreen> with WidgetsBindingObserv
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed && !_found) {
-      _doDiscover();
+    if (state == AppLifecycleState.resumed) {
+      if (!_found) _doDiscover();
+      _connectSpotify();
     }
   }
 
@@ -1239,13 +1294,14 @@ class _SessionPerformanceScreenState extends State<SessionPerformanceScreen> wit
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
+      _wifiChannel.invokeMethod('spotifyConnect');
       // Re-trigger the current scene animation to wake up the timer/engine
       _runner.setByRef(widget.pack.scenes[_currentIndex].goveeRef);
     }
   }
 
   late final AudioEngine _audio;
-  int _currentIndex = 0;
+  int _currentIndex = 0; int _currentRampId = 0;
   double _ambientVol = 50, _triggerVol = 80;
   bool _spotifyPaused = false;
   bool _isPaused = false;
@@ -1254,10 +1310,12 @@ class _SessionPerformanceScreenState extends State<SessionPerformanceScreen> wit
 
 
   Future<void> _rampAmbient(double from, double to) async {
-    const steps = 8; const stepMs = 50;
+    final rampId = ++_currentRampId;
+    const steps = 6; const stepMs = 30; // Faster steps
     for (int i = 1; i <= steps; i++) {
+      if (rampId != _currentRampId) return;
       final v = from + (to - from) * i / steps;
-      await _audio.setAmbientVolume(v);
+      _audio.setAmbientVolume(v);
       if (i < steps) await Future.delayed(const Duration(milliseconds: stepMs));
     }
   }
@@ -1272,41 +1330,49 @@ class _SessionPerformanceScreenState extends State<SessionPerformanceScreen> wit
     _enterScene(0);
   }
 
-  Future<void> _enterScene(int index) async {
+    void _enterScene(int index) {
     _isPaused = false;
     final scene = widget.pack.scenes[index];
 
-    // Fade out ambient only — do not touch Spotify volume (causes bell + hangs)
-    if (_hasScene) {
-      await _rampAmbient(_ambientVol / 100.0, 0.0);
-    }
-    _hasScene = true;
-
-    setState(() => _currentIndex = index);
+    // 1. Instant UI and Light Update
+    setState(() {
+      _currentIndex = index;
+      _hasScene = true;
+      _ambientVol = scene.ambientVolume.toDouble();
+    });
     _runner.setByRef(scene.goveeRef);
 
-    // Switch ambient track at silence
+    // 2. Fire-and-forget Audio Commands (Parallel)
+    
+    // Spotify (Zero-lag path)
+    if (scene.spotify.uri.isNotEmpty) {
+      _wifiChannel.invokeMethod('spotifyPlay', {
+        'uri': scene.spotify.uri,
+        'startTime': scene.spotify.startTime,
+      }).catchError((_) {});
+      setState(() => _spotifyPaused = false);
+    }
+
+    // Ambient transition (Sequential but non-blocking for the rest of the app)
+    _performAmbientTransition(scene);
+  }
+
+  Future<void> _performAmbientTransition(SessionScene scene) async {
+    // If we're already playing something, do a quick fade out or just stop
+    // To minimize lag, we just stop the old and start the new instantly.
     if (scene.ambientId != null) {
       final asset = widget.pack.audioManifest[scene.ambientId];
       if (asset != null) {
         final path = '${widget.pack.directoryPath}/${asset.file}';
         await _audio.playAmbient(path, 0.0);
+        _rampAmbient(0.0, scene.ambientVolume / 100.0);
       }
     } else {
-      await _audio.setAmbientVolume(0);
+      _audio.setAmbientVolume(0);
     }
-
-    // Switch Spotify instantly then set target volume in one call
-    if (scene.spotify.uri.isNotEmpty) {
-      await _wifiChannel.invokeMethod('spotifyPlay', scene.spotify.uri).catchError((_) {});
-      setState(() => _spotifyPaused = false);
-    }
-
-    // Fade ambient in
-    final targetAmbient = scene.ambientId != null ? scene.ambientVolume / 100.0 : 0.0;
-    await _rampAmbient(0.0, targetAmbient);
-    setState(() => _ambientVol = scene.ambientVolume.toDouble());
   }
+
+
 
   void _fireTrigger(Trigger t, int index) async {
     HapticFeedback.lightImpact();
