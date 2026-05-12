@@ -17,10 +17,17 @@ import java.net.URL
 import java.security.MessageDigest
 import java.security.SecureRandom
 import android.widget.Toast
+import android.os.Handler
+import android.os.Looper
 import org.json.JSONObject
+import com.spotify.android.appremote.api.ConnectionParams
+import com.spotify.android.appremote.api.Connector
+import com.spotify.android.appremote.api.SpotifyAppRemote
+
 
 class MainActivity : FlutterActivity() {
     private var multicastLock: WifiManager.MulticastLock? = null
+    private var spotifyAppRemote: SpotifyAppRemote? = null
 
     private val CLIENT_ID = "ca8e9bd0cc234c3d9e460224022db37f"
     private val REDIRECT_URI = "govee-scene://callback"
@@ -207,7 +214,31 @@ class MainActivity : FlutterActivity() {
                                 ).responseCode
                                 if (status == 404) {
                                     runOnUiThread {
-                                        Toast.makeText(applicationContext, "Open Spotify first, then enter the scene again", Toast.LENGTH_LONG).show()
+                                        // Fallback: Use Spotify App Remote to wake up the player silently
+                                        val connectionParams = ConnectionParams.Builder(CLIENT_ID)
+                                            .setRedirectUri(REDIRECT_URI)
+                                            .showAuthView(false)
+                                            .build()
+
+                                        SpotifyAppRemote.connect(applicationContext, connectionParams, object : Connector.ConnectionListener {
+                                            override fun onConnected(remote: SpotifyAppRemote) {
+                                                spotifyAppRemote = remote
+                                                remote.playerApi.play(spotifyUri)
+                                                // Success! No need to open the app UI.
+                                                // We disconnect after a short delay to keep the connection clean
+                                                Handler(Looper.getMainLooper()).postDelayed({
+                                                    SpotifyAppRemote.disconnect(remote)
+                                                    spotifyAppRemote = null
+                                                }, 5000)
+                                            }
+                                            override fun onFailure(throwable: Throwable) {
+                                                // If App Remote also fails (Spotify completely killed), then we must use the Intent
+                                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(spotifyUri)).apply {
+                                                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                                                }
+                                                try { startActivity(intent) } catch (_: Exception) {}
+                                            }
+                                        })
                                     }
                                 }
                             } catch (_: Exception) {}

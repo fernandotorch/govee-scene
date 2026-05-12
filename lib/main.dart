@@ -271,9 +271,15 @@ class GoveeEngine {
   }
 
   void _send(Map<String, dynamic> cmd) {
-    if (_deviceIp == null || _socket == null) return;
+    if (_deviceIp == null) return;
+    if (_socket == null) { _initSocket().then((_) => _send(cmd)); return; }
+    try {
+      final payload = utf8.encode(jsonEncode({"msg": cmd}));
+      _socket!.send(payload, _deviceIp!, _controlPort);
+    } catch (_) {
+      _initSocket().then((_) => _send(cmd));
+    }
     final payload = utf8.encode(jsonEncode({'msg': cmd}));
-    _socket!.send(payload, _deviceIp!, _controlPort);
   }
 
   void turnOn()                   => _send({'cmd': 'turn',       'data': {'value': 1}});
@@ -307,6 +313,7 @@ class GoveeEngine {
 // ── Scene runner ──────────────────────────────────────────────────────────────
 
 class SceneRunner {
+  Timer? _flashTimer;
   final GoveeEngine engine;
   Timer? _timer;
   bool _cancelled = false;
@@ -320,6 +327,9 @@ class SceneRunner {
     _sessionId++;
     _timer?.cancel();
     _timer = null;
+    _flashTimer?.cancel();
+    _flashTimer = null;
+    _cancelled = true;
   }
 
   void stop() {
@@ -402,7 +412,7 @@ class SceneRunner {
   void disian() {
     engine.turnOn();
     var phase = 0.0;
-    _loop(const Duration(milliseconds: 50), () {
+    _loop(const Duration(milliseconds: 120), () {
       phase += 0.04;
       final v = (sin(phase) + 1) / 2;
       final bright = (22 + v * 58) / 100.0;
@@ -417,16 +427,52 @@ class SceneRunner {
   }
 
   void flash(String? ref) {
+    _flashTimer?.cancel();
     if (ref == 'white-burst') {
       engine.turnOn(); engine.brightness(100); engine.color(255, 255, 255);
-      Timer(const Duration(milliseconds: 200), () => engine.brightness(0));
+      _flashTimer = Timer(const Duration(milliseconds: 200), () => engine.brightness(0));
     } else if (ref == 'orange-burst') {
       engine.turnOn(); engine.brightness(100); engine.color(255, 100, 0);
-      Timer(const Duration(milliseconds: 200), () => engine.brightness(0));
+      _flashTimer = Timer(const Duration(milliseconds: 200), () => engine.brightness(0));
     } else if (ref == 'purple-pulse') {
       engine.turnOn(); engine.brightness(100); engine.color(180, 0, 255);
-      Timer(const Duration(milliseconds: 300), () => engine.brightness(20));
+      _flashTimer = Timer(const Duration(milliseconds: 300), () => engine.brightness(20));
+    } else if (ref == 'fire-spark') {
+      engine.turnOn(); engine.brightness(100); engine.color(255, 200, 50);
+      _flashTimer = Timer(const Duration(milliseconds: 100), () => engine.brightness(50));
     }
+  }
+
+  void braveSea() {
+    engine.turnOn(); engine.brightness(100);
+    var t = 0.0;
+    _loop(const Duration(milliseconds: 120), () {
+      t += 0.6;
+      final crestBase = (t % 3.5) - 1.5;
+      final splash = _rng.nextDouble() < 0.15;
+      final packet = <(int, int, int, int)>[];
+      
+      for (var i = 0; i < 10; i++) {
+        final mask = 1 << i;
+        final idx = i % 5;
+        final crestPos = (i < 5) ? crestBase : ((t * 1.1 + 1.5) % 3.2) - 1.5;
+        final dist = (idx - crestPos).abs();
+        
+        var (r, g, b) = (0, 2, 30);
+        if (dist < 1.0) {
+          final v = 1.0 - dist;
+          r = (r + (200 - r) * v).round();
+          g = (g + (240 - g) * v).round();
+          b = (b + (255 - b) * v).round();
+        }
+        if (splash && _rng.nextDouble() < 0.4) {
+          r = 230; g = 250; b = 255;
+        }
+        packet.add((r, g, b, mask));
+      }
+      
+      engine.segColors(packet);
+    });
   }
 
   void torches() {
@@ -488,12 +534,14 @@ class SceneRunner {
             if (_cancelled || _sessionId != session) break;
             engine.segColors([(255, 0, 0, _leftMask | _rightMask)]);
             await Future.delayed(Duration(milliseconds: 200 + _rng.nextInt(201)));
+            if (_cancelled || _sessionId != session) break;
           } else if (roll < 0.70) {
             engine.segColors([(255, 0, 0, _leftMask | _rightMask)]);
             await Future.delayed(Duration(milliseconds: 150 + _rng.nextInt(151)));
             if (_cancelled || _sessionId != session) break;
             engine.segColors([(0, 0, 0, _leftMask | _rightMask)]);
             await Future.delayed(Duration(milliseconds: 400 + _rng.nextInt(401)));
+            if (_cancelled || _sessionId != session) break;
           } else if (roll < 0.90) {
             engine.segColors([(255, 0, 0, _leftMask | _rightMask)]);
             await Future.delayed(Duration(milliseconds: 200 + _rng.nextInt(301)));
@@ -509,11 +557,12 @@ class SceneRunner {
         final packet = <(int, int, int, int)>[];
         
         for (var h = 0; h < 5; h++) {
+          var br = 0, bg = 0, bb = 0;
           if (h == 0)      { br = 40;  bg = 0;  bb = 90;  }
           else if (h == 1) { br = 100; bg = 0;  bb = 200; }
           else if (h == 2) { br = 255; bg = 0;  bb = 150; }
           else if (h == 3) { br = 230; bg = 230; bb = 255; }
-          else             { br = 255; bg = 10; bb = 0;   }
+          else             { br = 255; bg = 100; bb = 255; } // Bright Magenta Tip
           
           for (var isRight in [false, true]) {
             final mask = 1 << (h + (isRight ? 5 : 0));
@@ -545,6 +594,7 @@ class SceneRunner {
   }
 
   void setByRef(String ref) {
+    _stopLoop();
     switch (ref) {
       case 'police':    police();    break;
       case 'alarm':     alarm();     break;
@@ -552,15 +602,15 @@ class SceneRunner {
       case 'flicker':   flicker();   break;
       case 'disian':    disian();    break;
       case 'brave-sea': braveSea();  break;
-      case 'torches':   torches();   break;
+      case 'torches':
+      case 'torch-fire': torches();   break;
       case 'evil':      purpleEvil(); break;
       case 'off':       stop();      break;
       default: engine.turnOn(); engine.color(200, 200, 200); engine.brightness(50);
     }
   }
-  }
 
-  void dispose() => _timer?.cancel();
+  void dispose() => stop();
 }
 
 Future<void> extractAndLoadSession(BuildContext context, Uint8List zipBytes, GoveeEngine engine) async {
@@ -614,16 +664,33 @@ class TheaterScreen extends StatefulWidget {
   State<TheaterScreen> createState() => _TheaterScreenState();
 }
 
-class _TheaterScreenState extends State<TheaterScreen> {
+class _TheaterScreenState extends State<TheaterScreen> with WidgetsBindingObserver {
   final _engine = GoveeEngine();
   late final SceneRunner _runner;
   bool _discovering = true;
   bool _found = false;
+
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _runner = SceneRunner(_engine);
     _doDiscover();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _runner.dispose();
+    _engine.dispose();
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && !_found) {
+      _doDiscover();
+    }
   }
 
   Future<void> _doDiscover() async {
@@ -716,8 +783,7 @@ class _TheaterScreenState extends State<TheaterScreen> {
     }
   }
 
-  @override
-  void dispose() { _runner.dispose(); _engine.dispose(); super.dispose(); }
+  
 
   @override
   Widget build(BuildContext context) {
@@ -913,7 +979,7 @@ class StudioBrowserScreen extends StatefulWidget {
   State<StudioBrowserScreen> createState() => _StudioBrowserScreenState();
 }
 
-class _StudioBrowserScreenState extends State<StudioBrowserScreen> {
+class _StudioBrowserScreenState extends State<StudioBrowserScreen> with WidgetsBindingObserver {
   final _ipController = TextEditingController();
   List<Map<String, String>> _packs = [];
   bool _loading = false;
@@ -922,12 +988,14 @@ class _StudioBrowserScreenState extends State<StudioBrowserScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _loadSavedIp();
   }
 
   @override
   void dispose() {
     _ipController.dispose();
+    WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
 
@@ -1166,8 +1234,16 @@ class SessionPerformanceScreen extends StatefulWidget {
   State<SessionPerformanceScreen> createState() => _SessionPerformanceScreenState();
 }
 
-class _SessionPerformanceScreenState extends State<SessionPerformanceScreen> with TickerProviderStateMixin {
+class _SessionPerformanceScreenState extends State<SessionPerformanceScreen> with TickerProviderStateMixin, WidgetsBindingObserver {
   late final SceneRunner _runner;
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      // Re-trigger the current scene animation to wake up the timer/engine
+      _runner.setByRef(widget.pack.scenes[_currentIndex].goveeRef);
+    }
+  }
+
   late final AudioEngine _audio;
   int _currentIndex = 0;
   double _ambientVol = 50, _triggerVol = 80;
@@ -1190,6 +1266,7 @@ class _SessionPerformanceScreenState extends State<SessionPerformanceScreen> wit
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _runner = SceneRunner(widget.engine);
     _audio = AudioEngine();
     _enterScene(0);
@@ -1293,9 +1370,11 @@ class _SessionPerformanceScreenState extends State<SessionPerformanceScreen> wit
 
   @override
   void dispose() {
+    _wifiChannel.invokeMethod("spotifyPause", null).catchError((_) {});
     for (final c in _activeTriggers.values) { c.dispose(); }
     _runner.dispose();
     _audio.dispose();
+    WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
 
