@@ -139,13 +139,15 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun webApiPut(url: String, token: String, jsonBody: String? = null): HttpURLConnection {
-        val conn = URL(url).openConnection() as HttpURLConnection
+        val conn = java.net.URL(url).openConnection() as java.net.HttpURLConnection
         conn.requestMethod = "PUT"
+        conn.connectTimeout = 10000
+        conn.readTimeout = 10000
         conn.setRequestProperty("Authorization", "Bearer $token")
         if (jsonBody != null) {
             conn.setRequestProperty("Content-Type", "application/json")
             conn.doOutput = true
-            OutputStreamWriter(conn.outputStream).use { it.write(jsonBody) }
+            java.io.OutputStreamWriter(conn.outputStream).use { it.write(jsonBody) }
         } else {
             conn.setRequestProperty("Content-Length", "0")
             conn.doOutput = true
@@ -158,7 +160,7 @@ class MainActivity : FlutterActivity() {
         super.configureFlutterEngine(flutterEngine)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "com.feru.govee_scene/wifi")
             .setMethodCallHandler { call, result ->
-                when (call.method) {
+                                when (call.method) {
                     "acquireMulticastLock" -> {
                         val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
                         multicastLock = wm.createMulticastLock("govee_scene")
@@ -171,14 +173,35 @@ class MainActivity : FlutterActivity() {
                         result.success(null)
                     }
                     "getHotspotIp" -> result.success(findHotspotIp())
-                    "launchSpotifyUri" -> {
-                        val uri = call.arguments as? String
-                        if (uri != null) {
-                            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(uri)).apply {
-                                flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                            })
+                    "spotifyConnect" -> {
+                        if (spotifyAppRemote?.isConnected == true) {
+                            result.success(true)
+                            return@setMethodCallHandler
                         }
+                        val params = com.spotify.android.appremote.api.ConnectionParams.Builder(CLIENT_ID)
+                            .setRedirectUri(REDIRECT_URI)
+                            .showAuthView(false)
+                            .build()
+                        com.spotify.android.appremote.api.SpotifyAppRemote.connect(applicationContext, params, object : com.spotify.android.appremote.api.Connector.ConnectionListener {
+                            override fun onConnected(remote: com.spotify.android.appremote.api.SpotifyAppRemote) {
+                                spotifyAppRemote = remote
+                                result.success(true)
+                            }
+                            override fun onFailure(t: Throwable) {
+                                result.success(false)
+                            }
+                        })
+                    }
+                    "spotifyDisconnect" -> {
+                        spotifyAppRemote?.let { com.spotify.android.appremote.api.SpotifyAppRemote.disconnect(it) }
+                        spotifyAppRemote = null
                         result.success(null)
+                    }
+                    "spotifyRefresh" -> {
+                        Thread {
+                            val token = refreshSpotifyToken()
+                            runOnUiThread { result.success(token != null) }
+                        }.start()
                     }
                     "setMediaVolume" -> {
                         val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
@@ -187,77 +210,70 @@ class MainActivity : FlutterActivity() {
                         am.setStreamVolume(AudioManager.STREAM_MUSIC, vol, 0)
                         result.success(null)
                     }
-                    "setSpotifyVolume" -> {
-                        val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-                        val max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-                        val vol = ((call.arguments as Int) / 100.0 * max).toInt().coerceIn(0, max)
-                        am.setStreamVolume(AudioManager.STREAM_MUSIC, vol, 0)
-                        result.success(null)
-                    }
                     "spotifyPlay" -> {
-                        val uri = call.arguments as? String ?: run { result.success(null); return@setMethodCallHandler }
+                        val args = call.arguments as? Map<String, Any>
+                        val uri = args?.get("uri") as? String ?: run { result.success(null); return@setMethodCallHandler }
+                        val startTime = (args?.get("startTime") as? Int ?: 0) * 1000L
                         val spotifyUri = toSpotifyUri(uri)
-                        Thread {
-                            val token = getValidToken() ?: run {
-                                runOnUiThread {
-                                    startSpotifyPkceAuth()
-                                    Toast.makeText(applicationContext, "Authorize Spotify then come back", Toast.LENGTH_LONG).show()
-                                }
-                                runOnUiThread { result.success(null) }
-                                return@Thread
-                            }
-                            try {
-                                val status = webApiPut(
-                                    "https://api.spotify.com/v1/me/player/play",
-                                    token,
-                                    """{"context_uri":"$spotifyUri"}"""
-                                ).responseCode
-                                if (status == 404) {
-                                    runOnUiThread {
-                                        // Fallback: Use Spotify App Remote to wake up the player silently
-                                        val connectionParams = ConnectionParams.Builder(CLIENT_ID)
-                                            .setRedirectUri(REDIRECT_URI)
-                                            .showAuthView(false)
-                                            .build()
 
-                                        SpotifyAppRemote.connect(applicationContext, connectionParams, object : Connector.ConnectionListener {
-                                            override fun onConnected(remote: SpotifyAppRemote) {
-                                                spotifyAppRemote = remote
-                                                remote.playerApi.play(spotifyUri)
-                                                // Success! No need to open the app UI.
-                                                // We disconnect after a short delay to keep the connection clean
-                                                Handler(Looper.getMainLooper()).postDelayed({
-                                                    SpotifyAppRemote.disconnect(remote)
-                                                    spotifyAppRemote = null
-                                                }, 5000)
-                                            }
-                                            override fun onFailure(throwable: Throwable) {
-                                                // If App Remote also fails (Spotify completely killed), then we must use the Intent
-                                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(spotifyUri)).apply {
-                                                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                                                }
-                                                try { startActivity(intent) } catch (_: Exception) {}
-                                            }
-                                        })
-                                    }
+                        // 1. LOCAL PLAY (INSTANT)
+                        val remote = spotifyAppRemote
+                        if (remote?.isConnected == true) {
+                            remote.playerApi.play(spotifyUri)
+                            if (startTime > 0) {
+                                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                                    remote.playerApi.seekTo(startTime)
+                                }, 600)
+                            }
+                            result.success(true)
+                        } else {
+                            // 2. CLOUD FALLBACK
+                            Thread {
+                                val token = getValidToken() ?: run {
+                                    runOnUiThread { startSpotifyPkceAuth() }
+                                    runOnUiThread { result.success(false) }
+                                    return@Thread
                                 }
-                            } catch (_: Exception) {}
-                            runOnUiThread { result.success(null) }
-                        }.start()
+                                try {
+                                    val isTrack = spotifyUri.contains(":track:")
+                                    val body = if (isTrack) """{"uris":["$spotifyUri"]}""" else """{"context_uri":"$spotifyUri"}"""
+                                    val playConn = webApiPut("https://api.spotify.com/v1/me/player/play", token, body)
+                                    if (playConn.responseCode in 200..299 && startTime > 0) {
+                                        Thread.sleep(800)
+                                        webApiPut("https://api.spotify.com/v1/me/player/seek?position_ms=$startTime", token).responseCode
+                                    }
+                                    runOnUiThread { result.success(true) }
+                                } catch (e: Exception) {
+                                    runOnUiThread { result.success(false) }
+                                }
+                            }.start()
+                        }
                     }
                     "spotifyPause" -> {
-                        Thread {
-                            val token = getValidToken() ?: run { runOnUiThread { result.success(null) }; return@Thread }
-                            try { webApiPut("https://api.spotify.com/v1/me/player/pause", token).responseCode } catch (_: Exception) {}
-                            runOnUiThread { result.success(null) }
-                        }.start()
+                        val remote = spotifyAppRemote
+                        if (remote?.isConnected == true) {
+                            remote.playerApi.pause()
+                            result.success(null)
+                        } else {
+                            Thread {
+                                val token = getValidToken() ?: run { runOnUiThread { result.success(null) }; return@Thread }
+                                try { webApiPut("https://api.spotify.com/v1/me/player/pause", token).responseCode } catch (_: Exception) {}
+                                runOnUiThread { result.success(null) }
+                            }.start()
+                        }
                     }
                     "spotifyResume" -> {
-                        Thread {
-                            val token = getValidToken() ?: run { runOnUiThread { result.success(null) }; return@Thread }
-                            try { webApiPut("https://api.spotify.com/v1/me/player/play", token).responseCode } catch (_: Exception) {}
-                            runOnUiThread { result.success(null) }
-                        }.start()
+                        val remote = spotifyAppRemote
+                        if (remote?.isConnected == true) {
+                            remote.playerApi.resume()
+                            result.success(null)
+                        } else {
+                            Thread {
+                                val token = getValidToken() ?: run { runOnUiThread { result.success(null) }; return@Thread }
+                                try { webApiPut("https://api.spotify.com/v1/me/player/play", token).responseCode } catch (_: Exception) {}
+                                runOnUiThread { result.success(null) }
+                            }.start()
+                        }
                     }
                     else -> result.notImplemented()
                 }
