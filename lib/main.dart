@@ -1447,9 +1447,12 @@ class _SessionPerformanceScreenState extends State<SessionPerformanceScreen> wit
   @override
   Widget build(BuildContext context) {
     final scene = widget.pack.scenes[_currentIndex];
-    final prev = _currentIndex > 0 ? widget.pack.scenes[_currentIndex - 1] : null;
-    final int nextIndex = (_currentIndex + 1) % widget.pack.scenes.length;
-    final next = widget.pack.scenes.length > 1 ? widget.pack.scenes[nextIndex] : null;
+    final int len = widget.pack.scenes.length;
+    final bool isCircular = len > 1;
+    final int prevIndex = (_currentIndex - 1 + len) % len;
+    final int nextIndex = (_currentIndex + 1) % len;
+    final prev = isCircular ? widget.pack.scenes[prevIndex] : null;
+    final next = isCircular ? widget.pack.scenes[nextIndex] : null;
 
     return Scaffold(
       backgroundColor: Colors.black,
@@ -1462,7 +1465,7 @@ class _SessionPerformanceScreenState extends State<SessionPerformanceScreen> wit
               child: Row(
                 children: [
                   GestureDetector(
-                    onTap: prev != null ? () => _enterScene(_currentIndex - 1) : null,
+                    onTap: prev != null ? () => _enterScene(prevIndex) : null,
                     child: SizedBox(
                       width: 88,
                       child: Row(children: [
