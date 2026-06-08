@@ -518,6 +518,52 @@ class SceneRunner {
       Timer(const Duration(milliseconds: 2704), () { engine.color(255, 110,  5); });
       Timer(const Duration(milliseconds: 2876), () { engine.color(150,  18,  0); });
       _flashTimer = Timer(const Duration(milliseconds: 3251), () => setByRef(_currentRef));
+    } else if (ref == 'bio-burst') {
+      // Phase 1 — pressure build → white-pink burst → first decay
+      engine.color(130, 0, 15);
+      Timer(const Duration(milliseconds:  200), () { engine.color(180,   5,  20); });
+      Timer(const Duration(milliseconds:  400), () { engine.color(230,  10,  25); });
+      Timer(const Duration(milliseconds:  600), () { engine.color( 15,   0,   5); });
+      Timer(const Duration(milliseconds:  700), () { engine.color(255, 180, 160); });
+      Timer(const Duration(milliseconds:  800), () { engine.color(255,   0,  10); });
+      Timer(const Duration(milliseconds:  900), () { engine.color( 20,   0,   5); });
+      Timer(const Duration(milliseconds: 1000), () { engine.color(210,   0,  15); });
+      Timer(const Duration(milliseconds: 1100), () { engine.color( 15,   0,   3); });
+      Timer(const Duration(milliseconds: 1300), () { engine.color( 70,   0,  10); });
+      // Phase 2 — low simmer → compression → rapid red/dark finale → fade
+      Timer(const Duration(milliseconds: 1600), () { engine.color(150,   0,  10); });
+      Timer(const Duration(milliseconds: 2000), () { engine.color(200,   0,  15); });
+      Timer(const Duration(milliseconds: 2450), () { engine.color(230,   5,  15); });
+      Timer(const Duration(milliseconds: 2800), () { engine.color(175,   0,  12); });
+      Timer(const Duration(milliseconds: 3100), () { engine.color(230,   5,  15); });
+      Timer(const Duration(milliseconds: 3450), () { engine.color(178,   0,  12); });
+      Timer(const Duration(milliseconds: 3750), () { engine.color(228,   5,  15); });
+      Timer(const Duration(milliseconds: 4100), () { engine.color(175,   0,  11); });
+      Timer(const Duration(milliseconds: 4400), () { engine.color(220,   5,  14); });
+      Timer(const Duration(milliseconds: 4650), () { engine.color( 15,   0,   3); });
+      Timer(const Duration(milliseconds: 4850), () { engine.color(255,   0,  10); });
+      Timer(const Duration(milliseconds: 4930), () { engine.color( 10,   0,   2); });
+      Timer(const Duration(milliseconds: 5010), () { engine.color(255,   0,  10); });
+      Timer(const Duration(milliseconds: 5090), () { engine.color( 10,   0,   2); });
+      Timer(const Duration(milliseconds: 5170), () { engine.color(240,   0,   8); });
+      Timer(const Duration(milliseconds: 5250), () { engine.color( 10,   0,   2); });
+      Timer(const Duration(milliseconds: 5330), () { engine.color(220,   0,   8); });
+      Timer(const Duration(milliseconds: 5410), () { engine.color( 10,   0,   2); });
+      Timer(const Duration(milliseconds: 5490), () { engine.color(200,   0,   6); });
+      Timer(const Duration(milliseconds: 5590), () { engine.color( 10,   0,   2); });
+      Timer(const Duration(milliseconds: 5690), () { engine.color(170,   0,   5); });
+      Timer(const Duration(milliseconds: 5810), () { engine.color( 10,   0,   2); });
+      Timer(const Duration(milliseconds: 5930), () { engine.color(130,   0,   4); });
+      Timer(const Duration(milliseconds: 6230), () { engine.color( 10,   0,   2); });
+      Timer(const Duration(milliseconds: 6580), () { engine.color( 80,   0,   3); });
+      Timer(const Duration(milliseconds: 6980), () { engine.color( 10,   0,   2); });
+      Timer(const Duration(milliseconds: 7380), () { engine.color( 30,   0,   1); });
+      Timer(const Duration(milliseconds: 7880), () { engine.color(  8,   0,   0); });
+      Timer(const Duration(milliseconds: 8580), () { engine.color( 15,   0,   0); });
+      Timer(const Duration(milliseconds: 9280), () { engine.color(  4,   0,   0); });
+      Timer(const Duration(milliseconds: 9880), () { engine.color( 10,   0,   0); });
+      Timer(const Duration(milliseconds: 10580), () { engine.color(  2,   0,   0); });
+      _flashTimer = Timer(const Duration(milliseconds: 11280), () => setByRef(_currentRef));
     }
   }
 
