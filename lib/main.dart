@@ -382,7 +382,7 @@ class SceneRunner {
   void _loop(Duration interval, void Function() fn) {
     _stopLoop();
     _cancelled = false;
-    fn();
+    Timer(const Duration(milliseconds: 45), () { if (!_cancelled) fn(); });
     _timer = Timer.periodic(interval, (_) => fn());
   }
 
@@ -470,19 +470,19 @@ class SceneRunner {
   void flash(String? ref) {
     _flashTimer?.cancel();
     if (ref == 'white-burst') {
-      engine.turnOn(); engine.brightness(100); engine.color(255, 255, 255);
+      engine.color(255, 255, 255);
       _flashTimer = Timer(const Duration(milliseconds: 200), () => setByRef(_currentRef));
     } else if (ref == 'orange-burst') {
-      engine.turnOn(); engine.brightness(100); engine.color(255, 100, 0);
+      engine.color(255, 100, 0);
       _flashTimer = Timer(const Duration(milliseconds: 200), () => setByRef(_currentRef));
     } else if (ref == 'purple-pulse') {
-      engine.turnOn(); engine.brightness(100); engine.color(180, 0, 255);
+      engine.color(180, 0, 255);
       _flashTimer = Timer(const Duration(milliseconds: 300), () => setByRef(_currentRef));
     } else if (ref == 'fire-spark') {
-      engine.turnOn(); engine.brightness(100); engine.color(255, 200, 50);
+      engine.color(255, 200, 50);
       _flashTimer = Timer(const Duration(milliseconds: 300), () => setByRef(_currentRef));
     } else if (ref == 'smg-burst') {
-      engine.turnOn(); engine.brightness(100); engine.color(255, 240, 180);
+      engine.color(255, 240, 180);
       Timer(const Duration(milliseconds: 105), () { engine.color(255, 150, 10); });
       Timer(const Duration(milliseconds: 210), () { engine.color(255, 240, 180); });
       Timer(const Duration(milliseconds: 315), () { engine.color(255, 150, 10); });
@@ -492,12 +492,12 @@ class SceneRunner {
       Timer(const Duration(milliseconds: 735), () { engine.color(255, 150, 10); });
       _flashTimer = Timer(const Duration(milliseconds: 840), () => setByRef(_currentRef));
     } else if (ref == 'pulse-rifle') {
-      engine.turnOn(); engine.brightness(100); engine.color(30, 90, 255);
+      engine.color(30, 90, 255);
       Timer(const Duration(milliseconds: 600), () { engine.color(230, 255, 255); });
       Timer(const Duration(milliseconds: 750), () { engine.color(0, 255, 80); });
       _flashTimer = Timer(const Duration(milliseconds: 950), () => setByRef(_currentRef));
     } else if (ref == 'flamethrower') {
-      engine.turnOn(); engine.brightness(100); engine.color(255, 220, 80);
+      engine.color(255, 220, 80);
       Timer(const Duration(milliseconds:   80), () { engine.color(255,  80,  0); });
       Timer(const Duration(milliseconds:  195), () { engine.color(255, 160, 20); });
       Timer(const Duration(milliseconds:  310), () { engine.color(255,  55,  0); });
@@ -710,8 +710,10 @@ class SceneRunner {
   void draconis() {
     _stopLoop(); _cancelled = false;
     final session = _sessionId;
-    engine.turnOn(); engine.brightness(100);
+    engine.turnOn();
     Future<void> animation() async {
+      await Future.delayed(const Duration(milliseconds: 50));
+      if (_cancelled || _sessionId != session) return;
       while (!_cancelled && _sessionId == session) {
         try {
           engine.segColors([(80, 200, 10, _leftMask | _rightMask)]);
