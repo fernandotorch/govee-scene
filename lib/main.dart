@@ -564,6 +564,9 @@ class SceneRunner {
       Timer(const Duration(milliseconds: 9880), () { engine.color( 10,   0,   0); });
       Timer(const Duration(milliseconds: 10580), () { engine.color(  2,   0,   0); });
       _flashTimer = Timer(const Duration(milliseconds: 11280), () => setByRef(_currentRef));
+    } else if (ref == 'fingers-reveal') {
+      engine.color(160, 0, 255);
+      _flashTimer = Timer(const Duration(milliseconds: 2000), () => setByRef(_currentRef));
     }
   }
 
@@ -746,6 +749,105 @@ class SceneRunner {
     barLoop(_leftMask, 60); barLoop(_rightMask, 110);
   }
 
+  void flickerPink() {
+    _stopLoop(); _cancelled = false;
+    final session = _sessionId;
+    engine.turnOn();
+    Future<void> barLoop(int mask, int startDelayMs) async {
+      await Future.delayed(Duration(milliseconds: startDelayMs));
+      if (_cancelled || _sessionId != session) return;
+      while (!_cancelled && _sessionId == session) {
+        try {
+          engine.segColors([(255, 0, 180, mask)]);
+          await Future.delayed(Duration(milliseconds: 10000 + _rng.nextInt(10001)));
+          if (_cancelled || _sessionId != session) break;
+          var remaining = 300 + _rng.nextInt(701);
+          while (remaining > 0 && !_cancelled && _sessionId == session) {
+            final cut = min(remaining, 200 + _rng.nextInt(301));
+            engine.segColors([(2, 0, 1, mask)]);
+            await Future.delayed(Duration(milliseconds: cut));
+            remaining -= cut;
+            if (_cancelled || _sessionId != session || remaining <= 0) break;
+            engine.segColors([(255, 0, 180, mask)]);
+            await Future.delayed(Duration(milliseconds: 40 + _rng.nextInt(81)));
+          }
+          if (!_cancelled && _sessionId == session) engine.segColors([(255, 0, 180, mask)]);
+        } catch (_) {}
+      }
+    }
+    barLoop(_leftMask, 60); barLoop(_rightMask, 110);
+  }
+
+  void flickerChapacabana() {
+    _stopLoop(); _cancelled = false;
+    final session = _sessionId;
+    engine.turnOn();
+    Future<void> barLoop(int r, int g, int b, int mask, int startDelayMs) async {
+      await Future.delayed(Duration(milliseconds: startDelayMs));
+      if (_cancelled || _sessionId != session) return;
+      while (!_cancelled && _sessionId == session) {
+        try {
+          engine.segColors([(r, g, b, mask)]);
+          await Future.delayed(Duration(milliseconds: 4000 + _rng.nextInt(6001)));
+          if (_cancelled || _sessionId != session) break;
+          var remaining = 300 + _rng.nextInt(701);
+          while (remaining > 0 && !_cancelled && _sessionId == session) {
+            final cut = min(remaining, 200 + _rng.nextInt(301));
+            engine.segColors([(2, 2, 2, mask)]);
+            await Future.delayed(Duration(milliseconds: cut));
+            remaining -= cut;
+            if (_cancelled || _sessionId != session || remaining <= 0) break;
+            engine.segColors([(r, g, b, mask)]);
+            await Future.delayed(Duration(milliseconds: 40 + _rng.nextInt(81)));
+          }
+          if (!_cancelled && _sessionId == session) engine.segColors([(r, g, b, mask)]);
+        } catch (_) {}
+      }
+    }
+    barLoop(0, 60, 255, _leftMask, 60); barLoop(160, 0, 255, _rightMask, 110);
+  }
+
+  void pelagio() {
+    engine.turnOn(); engine.brightness(100);
+    var phase = 0.0;
+    _loop(const Duration(milliseconds: 80), () {
+      phase += 0.042;
+      final v = (sin(phase) + 1) / 2;
+      final r = (200 + 55 * v).round();
+      final g = (90 + 120 * v).round();
+      final b = (130 * v).round();
+      engine.segColors([(r, g, b, _leftMask | _rightMask)]);
+    });
+  }
+
+  void harneven() {
+    _stopLoop(); _cancelled = false;
+    final session = _sessionId;
+    engine.turnOn();
+    Future<void> barLoop(int mask, int startDelayMs) async {
+      await Future.delayed(Duration(milliseconds: startDelayMs));
+      if (_cancelled || _sessionId != session) return;
+      while (!_cancelled && _sessionId == session) {
+        try {
+          engine.segColors([(210, 215, 255, mask)]);
+          await Future.delayed(Duration(milliseconds: 20000 + _rng.nextInt(25001)));
+          if (_cancelled || _sessionId != session) break;
+          var cut = 100 + _rng.nextInt(301);
+          while (cut > 30 && !_cancelled && _sessionId == session) {
+            engine.segColors([(160, 0, 255, mask)]);
+            await Future.delayed(Duration(milliseconds: cut));
+            if (_cancelled || _sessionId != session) break;
+            engine.segColors([(210, 215, 255, mask)]);
+            await Future.delayed(Duration(milliseconds: 40 + _rng.nextInt(81)));
+            cut = (cut * (0.35 + _rng.nextDouble() * 0.20)).round();
+          }
+          if (!_cancelled && _sessionId == session) engine.segColors([(210, 215, 255, mask)]);
+        } catch (_) {}
+      }
+    }
+    barLoop(_leftMask, 60); barLoop(_rightMask, 110);
+  }
+
   void cronus() {
     engine.turnOn(); engine.brightness(100);
     _loop(const Duration(seconds: 3), () {
@@ -804,6 +906,10 @@ class SceneRunner {
       case 'torch-fire': torches();   break;
       case 'evil':      purpleEvil(); break;
       case 'flicker-slow': flickerSlow(); break;
+      case 'flicker-pink':        flickerPink();        break;
+      case 'flicker-chapacabana': flickerChapacabana(); break;
+      case 'pelagio':             pelagio();            break;
+      case 'harneven':            harneven();           break;
       case 'cronus':       cronus();      break;
       case 'draconis':     draconis();    break;
       case 'autodestruct': autoDest();    break;
@@ -1169,7 +1275,7 @@ class _EffectsPanel extends StatelessWidget {
     ('flicker-slow', 'Montero',      'Slow damaged lights',      [Color(0xFF3a3020), Color(0xFF1a1808)], Color(0xFFD4C080)),
     ('cronus',       'Cronus',       'Cold blue-white static',   [Color(0xFF102030), Color(0xFF203050)], Color(0xFFBBCCFF)),
     ('draconis',     'Draconis',     'Alien heartbeat',          [Color(0xFF102010), Color(0xFF1a3010)], Color(0xFF88DD22)),
-    ('autodestruct', 'Alarm Pulse',  'Fast orange pulse',        [Color(0xFF3a1000), Color(0xFF7a2800)], Color(0xFFFF9933)),
+    ('autodestruct', 'Autodestruct', 'Fast orange pulse',        [Color(0xFF3a1000), Color(0xFF7a2800)], Color(0xFFFF9933)),
   ];
 
   @override
