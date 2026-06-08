@@ -675,11 +675,13 @@ class SceneRunner {
     _stopLoop(); _cancelled = false;
     final session = _sessionId;
     engine.turnOn();
-    Future<void> barLoop(int mask) async {
+    Future<void> barLoop(int mask, int startDelayMs) async {
+      await Future.delayed(Duration(milliseconds: startDelayMs));
+      if (_cancelled || _sessionId != session) return;
       while (!_cancelled && _sessionId == session) {
         try {
           engine.segColors([(240, 230, 200, mask)]);
-          await Future.delayed(Duration(milliseconds: 3000 + _rng.nextInt(5001)));
+          await Future.delayed(Duration(milliseconds: 4000 + _rng.nextInt(9001)));
           if (_cancelled || _sessionId != session) break;
           var remaining = 300 + _rng.nextInt(701);
           while (remaining > 0 && !_cancelled && _sessionId == session) {
@@ -695,7 +697,7 @@ class SceneRunner {
         } catch (_) {}
       }
     }
-    barLoop(_leftMask); barLoop(_rightMask);
+    barLoop(_leftMask, 60); barLoop(_rightMask, 110);
   }
 
   void cronus() {
@@ -1522,6 +1524,9 @@ class _SessionPerformanceScreenState extends State<SessionPerformanceScreen> wit
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Sound not found: ${t.soundId}')));
       return;
     }
+    if (t.flashRef != null) {
+      Future.delayed(const Duration(milliseconds: 350), () => _runner.flash(t.flashRef));
+    }
     final path = '${widget.pack.directoryPath}/${asset.file}';
     try {
       final ctrl = AnimationController(vsync: this, duration: const Duration(seconds: 10));
@@ -1529,9 +1534,6 @@ class _SessionPerformanceScreenState extends State<SessionPerformanceScreen> wit
       setState(() => _activeTriggers[index] = ctrl);
 
       final player = await _audio.playTrigger(path);
-      if (t.flashRef != null) {
-        Future.delayed(const Duration(milliseconds: 100), () => _runner.flash(t.flashRef));
-      }
 
       Future.any([
         player.onDurationChanged.first,
