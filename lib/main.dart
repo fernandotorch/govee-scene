@@ -679,7 +679,7 @@ class SceneRunner {
       while (!_cancelled && _sessionId == session) {
         try {
           engine.segColors([(240, 230, 200, mask)]);
-          await Future.delayed(Duration(milliseconds: 20000 + _rng.nextInt(25001)));
+          await Future.delayed(Duration(milliseconds: 3000 + _rng.nextInt(5001)));
           if (_cancelled || _sessionId != session) break;
           var remaining = 300 + _rng.nextInt(701);
           while (remaining > 0 && !_cancelled && _sessionId == session) {
@@ -1522,8 +1522,6 @@ class _SessionPerformanceScreenState extends State<SessionPerformanceScreen> wit
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Sound not found: ${t.soundId}')));
       return;
     }
-    if (t.flashRef != null) _runner.flash(t.flashRef);
-
     final path = '${widget.pack.directoryPath}/${asset.file}';
     try {
       final ctrl = AnimationController(vsync: this, duration: const Duration(seconds: 10));
@@ -1531,6 +1529,9 @@ class _SessionPerformanceScreenState extends State<SessionPerformanceScreen> wit
       setState(() => _activeTriggers[index] = ctrl);
 
       final player = await _audio.playTrigger(path);
+      if (t.flashRef != null) {
+        Future.delayed(const Duration(milliseconds: 100), () => _runner.flash(t.flashRef));
+      }
 
       Future.any([
         player.onDurationChanged.first,
