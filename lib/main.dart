@@ -681,7 +681,7 @@ class SceneRunner {
       while (!_cancelled && _sessionId == session) {
         try {
           engine.segColors([(240, 230, 200, mask)]);
-          await Future.delayed(Duration(milliseconds: 4000 + _rng.nextInt(9001)));
+          await Future.delayed(Duration(milliseconds: 10000 + _rng.nextInt(10001)));
           if (_cancelled || _sessionId != session) break;
           var remaining = 300 + _rng.nextInt(701);
           while (remaining > 0 && !_cancelled && _sessionId == session) {
@@ -1525,7 +1525,7 @@ class _SessionPerformanceScreenState extends State<SessionPerformanceScreen> wit
       return;
     }
     if (t.flashRef != null) {
-      Future.delayed(const Duration(milliseconds: 350), () => _runner.flash(t.flashRef));
+      Future.delayed(const Duration(milliseconds: 550), () => _runner.flash(t.flashRef));
     }
     final path = '${widget.pack.directoryPath}/${asset.file}';
     try {
