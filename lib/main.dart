@@ -359,6 +359,7 @@ class SceneRunner {
   bool _cancelled = false;
   int _sessionId = 0;
   final _rng = Random();
+  String _currentRef = 'off';
 
   SceneRunner(this.engine);
 
@@ -470,16 +471,53 @@ class SceneRunner {
     _flashTimer?.cancel();
     if (ref == 'white-burst') {
       engine.turnOn(); engine.brightness(100); engine.color(255, 255, 255);
-      _flashTimer = Timer(const Duration(milliseconds: 200), () => engine.brightness(0));
+      _flashTimer = Timer(const Duration(milliseconds: 200), () => setByRef(_currentRef));
     } else if (ref == 'orange-burst') {
       engine.turnOn(); engine.brightness(100); engine.color(255, 100, 0);
-      _flashTimer = Timer(const Duration(milliseconds: 200), () => engine.brightness(0));
+      _flashTimer = Timer(const Duration(milliseconds: 200), () => setByRef(_currentRef));
     } else if (ref == 'purple-pulse') {
       engine.turnOn(); engine.brightness(100); engine.color(180, 0, 255);
-      _flashTimer = Timer(const Duration(milliseconds: 300), () => engine.brightness(20));
+      _flashTimer = Timer(const Duration(milliseconds: 300), () => setByRef(_currentRef));
     } else if (ref == 'fire-spark') {
       engine.turnOn(); engine.brightness(100); engine.color(255, 200, 50);
-      _flashTimer = Timer(const Duration(milliseconds: 100), () => engine.brightness(50));
+      _flashTimer = Timer(const Duration(milliseconds: 300), () => setByRef(_currentRef));
+    } else if (ref == 'smg-burst') {
+      engine.turnOn(); engine.brightness(100); engine.color(255, 240, 180);
+      Timer(const Duration(milliseconds: 105), () { engine.color(255, 150, 10); });
+      Timer(const Duration(milliseconds: 210), () { engine.color(255, 240, 180); });
+      Timer(const Duration(milliseconds: 315), () { engine.color(255, 150, 10); });
+      Timer(const Duration(milliseconds: 420), () { engine.color(255, 240, 180); });
+      Timer(const Duration(milliseconds: 525), () { engine.color(255, 150, 10); });
+      Timer(const Duration(milliseconds: 630), () { engine.color(255, 240, 180); });
+      Timer(const Duration(milliseconds: 735), () { engine.color(255, 150, 10); });
+      _flashTimer = Timer(const Duration(milliseconds: 840), () => setByRef(_currentRef));
+    } else if (ref == 'pulse-rifle') {
+      engine.turnOn(); engine.brightness(100); engine.color(30, 90, 255);
+      Timer(const Duration(milliseconds: 600), () { engine.color(230, 255, 255); });
+      Timer(const Duration(milliseconds: 750), () { engine.color(0, 255, 80); });
+      _flashTimer = Timer(const Duration(milliseconds: 950), () => setByRef(_currentRef));
+    } else if (ref == 'flamethrower') {
+      engine.turnOn(); engine.brightness(100); engine.color(255, 220, 80);
+      Timer(const Duration(milliseconds:   80), () { engine.color(255,  80,  0); });
+      Timer(const Duration(milliseconds:  195), () { engine.color(255, 160, 20); });
+      Timer(const Duration(milliseconds:  310), () { engine.color(255,  55,  0); });
+      Timer(const Duration(milliseconds:  425), () { engine.color(255, 175, 25); });
+      Timer(const Duration(milliseconds:  540), () { engine.color(255,  65,  0); });
+      Timer(const Duration(milliseconds:  655), () { engine.color(255, 145, 10); });
+      Timer(const Duration(milliseconds:  770), () { engine.color(220,  45,  0); });
+      Timer(const Duration(milliseconds:  885), () { engine.color(255, 110,  5); });
+      Timer(const Duration(milliseconds: 1100), () { engine.color( 20,   5,  0); });
+      Timer(const Duration(milliseconds: 1380), () { engine.color(255, 220, 80); });
+      Timer(const Duration(milliseconds: 1500), () { engine.color(255,  80,  0); });
+      Timer(const Duration(milliseconds: 1672), () { engine.color(255, 160, 20); });
+      Timer(const Duration(milliseconds: 1844), () { engine.color(255,  55,  0); });
+      Timer(const Duration(milliseconds: 2016), () { engine.color(255, 175, 25); });
+      Timer(const Duration(milliseconds: 2188), () { engine.color(255,  65,  0); });
+      Timer(const Duration(milliseconds: 2360), () { engine.color(255, 145, 10); });
+      Timer(const Duration(milliseconds: 2532), () { engine.color(220,  45,  0); });
+      Timer(const Duration(milliseconds: 2704), () { engine.color(255, 110,  5); });
+      Timer(const Duration(milliseconds: 2876), () { engine.color(150,  18,  0); });
+      _flashTimer = Timer(const Duration(milliseconds: 3251), () => setByRef(_currentRef));
     }
   }
 
@@ -633,8 +671,78 @@ class SceneRunner {
     animation();
   }
 
+  void flickerSlow() {
+    _stopLoop(); _cancelled = false;
+    final session = _sessionId;
+    engine.turnOn();
+    Future<void> barLoop(int mask) async {
+      while (!_cancelled && _sessionId == session) {
+        try {
+          engine.segColors([(240, 230, 200, mask)]);
+          await Future.delayed(Duration(milliseconds: 20000 + _rng.nextInt(25001)));
+          if (_cancelled || _sessionId != session) break;
+          var remaining = 300 + _rng.nextInt(701);
+          while (remaining > 0 && !_cancelled && _sessionId == session) {
+            final cut = min(remaining, 200 + _rng.nextInt(301));
+            engine.segColors([(2, 2, 2, mask)]);
+            await Future.delayed(Duration(milliseconds: cut));
+            remaining -= cut;
+            if (_cancelled || _sessionId != session || remaining <= 0) break;
+            engine.segColors([(240, 230, 200, mask)]);
+            await Future.delayed(Duration(milliseconds: 40 + _rng.nextInt(81)));
+          }
+          if (!_cancelled && _sessionId == session) engine.segColors([(240, 230, 200, mask)]);
+        } catch (_) {}
+      }
+    }
+    barLoop(_leftMask); barLoop(_rightMask);
+  }
+
+  void cronus() {
+    engine.turnOn(); engine.brightness(100);
+    _loop(const Duration(seconds: 3), () {
+      engine.segColors([(165, 195, 255, _leftMask | _rightMask)]);
+    });
+  }
+
+  void draconis() {
+    _stopLoop(); _cancelled = false;
+    final session = _sessionId;
+    engine.turnOn(); engine.brightness(100);
+    Future<void> animation() async {
+      while (!_cancelled && _sessionId == session) {
+        try {
+          engine.segColors([(80, 200, 10, _leftMask | _rightMask)]);
+          await Future.delayed(const Duration(milliseconds: 100));
+          if (_cancelled || _sessionId != session) break;
+          engine.segColors([(13, 33, 1, _leftMask | _rightMask)]);
+          await Future.delayed(const Duration(milliseconds: 180));
+          if (_cancelled || _sessionId != session) break;
+          engine.segColors([(60, 150, 7, _leftMask | _rightMask)]);
+          await Future.delayed(const Duration(milliseconds: 100));
+          if (_cancelled || _sessionId != session) break;
+          engine.segColors([(13, 33, 1, _leftMask | _rightMask)]);
+          await Future.delayed(Duration(milliseconds: 1400 + _rng.nextInt(401)));
+        } catch (_) {}
+      }
+    }
+    animation();
+  }
+
+  void autoDest() {
+    engine.turnOn();
+    var phase = 0.0;
+    _loop(const Duration(milliseconds: 50), () {
+      phase += pi / 18;
+      final v = (sin(phase) + 1) / 2;
+      final s = 0.05 + 0.95 * v;
+      engine.segColors([((255 * s).round(), (80 * s).round(), 0, _leftMask | _rightMask)]);
+    });
+  }
+
   void setByRef(String ref) {
     _stopLoop();
+    _currentRef = ref;
     switch (ref) {
       case 'police':    police();    break;
       case 'alarm':     alarm();     break;
@@ -645,6 +753,10 @@ class SceneRunner {
       case 'torches':
       case 'torch-fire': torches();   break;
       case 'evil':      purpleEvil(); break;
+      case 'flicker-slow': flickerSlow(); break;
+      case 'cronus':       cronus();      break;
+      case 'draconis':     draconis();    break;
+      case 'autodestruct': autoDest();    break;
       case 'off':       stop();      break;
       default: engine.turnOn(); engine.color(200, 200, 200); engine.brightness(50);
     }
@@ -855,10 +967,10 @@ class _TheaterScreenState extends State<TheaterScreen> with WidgetsBindingObserv
                 const Center(child: CircularProgressIndicator()),
                 const SizedBox(height: 12),
                 const Center(child: Text('Searching for light bar…', style: TextStyle(color: Colors.grey))),
-              ] else if (!_found)
-                Expanded(child: _buildNotFound())
-              else
+              ] else ...[
+                if (!_found) _buildLightsOfflineBanner(),
                 Expanded(child: _buildSessionHome()),
+              ],
             ],
           ),
         ),
@@ -874,24 +986,45 @@ class _TheaterScreenState extends State<TheaterScreen> with WidgetsBindingObserv
           SizedBox(height: 4),
           Text('Session Control', style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
         ])),
-        if (_found) GestureDetector(
+        GestureDetector(
           onTap: _doDiscover,
-          child: Container(width: 10, height: 10, decoration: const BoxDecoration(color: Color(0xFF63B8DE), shape: BoxShape.circle)),
+          child: Container(
+            width: 10, height: 10,
+            decoration: BoxDecoration(
+              color: _found ? const Color(0xFF63B8DE) : Colors.redAccent.withAlpha(200),
+              shape: BoxShape.circle,
+            ),
+          ),
         ),
       ],
     );
   }
 
-  Widget _buildNotFound() {
-    return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-      const Icon(Icons.wifi_off, color: Colors.grey, size: 48),
-      const SizedBox(height: 16),
-      const Text('Light bar not found', style: TextStyle(fontSize: 18)),
-      const SizedBox(height: 8),
-      const Text('Enable LAN Control in the Govee app.\nWorks on Wi-Fi or phone hotspot.', textAlign: TextAlign.center, style: TextStyle(color: Colors.grey)),
-      const SizedBox(height: 24),
-      ElevatedButton(onPressed: _doDiscover, child: const Text('Try again')),
-    ]));
+  Widget _buildLightsOfflineBanner() {
+    return GestureDetector(
+      onTap: _doDiscover,
+      child: Container(
+        width: double.infinity,
+        margin: const EdgeInsets.only(bottom: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        decoration: BoxDecoration(
+          color: const Color(0xFF1A1A1A),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: Colors.white12),
+        ),
+        child: const Row(children: [
+          Icon(Icons.wifi_off, color: Colors.grey, size: 16),
+          SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              'Lights not found — audio only mode',
+              style: TextStyle(color: Colors.grey, fontSize: 12),
+            ),
+          ),
+          Text('Retry', style: TextStyle(color: Color(0xFF63B8DE), fontSize: 12)),
+        ]),
+      ),
+    );
   }
 
   Widget _buildSessionHome() {
@@ -976,13 +1109,17 @@ class _EffectsPanel extends StatelessWidget {
   static const _effects = [
     ('off',       'Off',             'Kill all effects',        [Color(0xFF2a2a2a), Color(0xFF1a1a1a)], Colors.grey),
     ('police',    'Police Siren',    'Red / blue rotating',     [Color(0xFFCC0000), Color(0xFF0033DD)], Colors.white),
-    ('alarm',     'Emergency Alarm', 'Orange rotating beacon',  [Color(0xFF7a2800), Color(0xFF3a1000)], Color(0xFFFFAA44)),
+    ('alarm',     'Alarm Rotation',  'Orange rotating beacon',  [Color(0xFF7a2800), Color(0xFF3a1000)], Color(0xFFFFAA44)),
     ('brave-sea', 'Brave Sea',      'High-action oceanic',     [Color(0xFF00021e), Color(0xFF001e3c)], Color(0xFF63B8DE)),
     ('torches',   'Torch Fire',      'Independent fire flickers', [Color(0xFF3a1000), Color(0xFF7a2800)], Color(0xFFFFAA44)),
     ('evil',      'Torch Fire Evil', 'Malevolent purple flames', [Color(0xFF1a0033), Color(0xFF660099)], Color(0xFFFF00FF)),
     ('club',      'Techno Club',     'Pink & green strobe',     [Color(0xFFCC006E), Color(0xFF00CC66)], Colors.white),
     ('flicker',   'Flickering',      'Damaged fluorescent',     [Color(0xFF3a3020), Color(0xFF1a1808)], Color(0xFFD4C080)),
-    ('disian',    'Disian',          'Deep purple — metaplane', [Color(0xFF1a0033), Color(0xFF330055)], Color(0xFFCCAAFF)),
+    ('disian',       'Disian',       'Deep purple — metaplane',  [Color(0xFF1a0033), Color(0xFF330055)], Color(0xFFCCAAFF)),
+    ('flicker-slow', 'Montero',      'Slow damaged lights',      [Color(0xFF3a3020), Color(0xFF1a1808)], Color(0xFFD4C080)),
+    ('cronus',       'Cronus',       'Cold blue-white static',   [Color(0xFF102030), Color(0xFF203050)], Color(0xFFBBCCFF)),
+    ('draconis',     'Draconis',     'Alien heartbeat',          [Color(0xFF102010), Color(0xFF1a3010)], Color(0xFF88DD22)),
+    ('autodestruct', 'Alarm Pulse',  'Fast orange pulse',        [Color(0xFF3a1000), Color(0xFF7a2800)], Color(0xFFFF9933)),
   ];
 
   @override
