@@ -29,7 +29,7 @@ class MainActivity : FlutterActivity() {
     private var multicastLock: WifiManager.MulticastLock? = null
     private var spotifyAppRemote: SpotifyAppRemote? = null
 
-    private val CLIENT_ID = "YOUR_SPOTIFY_CLIENT_ID"
+    private val CLIENT_ID = BuildConfig.SPOTIFY_CLIENT_ID
     private val REDIRECT_URI = "govee-scene://callback"
     private val PREFS_NAME = "spotify_tokens"
 
