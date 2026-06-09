@@ -156,6 +156,24 @@ class MainActivity : FlutterActivity() {
         return conn
     }
 
+    private fun webApiPost(url: String, token: String, jsonBody: String? = null): HttpURLConnection {
+        val conn = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+        conn.requestMethod = "POST"
+        conn.connectTimeout = 10000
+        conn.readTimeout = 10000
+        conn.setRequestProperty("Authorization", "Bearer $token")
+        if (jsonBody != null) {
+            conn.setRequestProperty("Content-Type", "application/json")
+            conn.doOutput = true
+            java.io.OutputStreamWriter(conn.outputStream).use { it.write(jsonBody) }
+        } else {
+            conn.setRequestProperty("Content-Length", "0")
+            conn.doOutput = true
+            conn.outputStream.close()
+        }
+        return conn
+    }
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "com.feru.govee_scene/wifi")
@@ -271,6 +289,19 @@ class MainActivity : FlutterActivity() {
                             Thread {
                                 val token = getValidToken() ?: run { runOnUiThread { result.success(null) }; return@Thread }
                                 try { webApiPut("https://api.spotify.com/v1/me/player/play", token).responseCode } catch (_: Exception) {}
+                                runOnUiThread { result.success(null) }
+                            }.start()
+                        }
+                    }
+                    "spotifySkip" -> {
+                        val remote = spotifyAppRemote
+                        if (remote?.isConnected == true) {
+                            remote.playerApi.skipNext()
+                            result.success(null)
+                        } else {
+                            Thread {
+                                val token = getValidToken() ?: run { runOnUiThread { result.success(null) }; return@Thread }
+                                try { webApiPost("https://api.spotify.com/v1/me/player/next", token).responseCode } catch (_: Exception) {}
                                 runOnUiThread { result.success(null) }
                             }.start()
                         }

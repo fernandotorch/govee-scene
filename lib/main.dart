@@ -469,6 +469,7 @@ class SceneRunner {
 
   void flash(String? ref) {
     _flashTimer?.cancel();
+    _timer?.cancel();
     if (ref == 'white-burst') {
       engine.color(255, 255, 255);
       _flashTimer = Timer(const Duration(milliseconds: 200), () => setByRef(_currentRef));
@@ -564,9 +565,15 @@ class SceneRunner {
       Timer(const Duration(milliseconds: 9880), () { engine.color( 10,   0,   0); });
       Timer(const Duration(milliseconds: 10580), () { engine.color(  2,   0,   0); });
       _flashTimer = Timer(const Duration(milliseconds: 11280), () => setByRef(_currentRef));
-    } else if (ref == 'fingers-reveal') {
-      engine.color(160, 0, 255);
-      _flashTimer = Timer(const Duration(milliseconds: 2000), () => setByRef(_currentRef));
+    } else if (ref == 'rose-pulse') {
+      engine.segColors([(255, 85, 93, _leftMask | _rightMask)]);
+      Timer(const Duration(milliseconds: 200), () {
+        engine.segColors([(89, 30, 33, _leftMask | _rightMask)]);
+        Timer(const Duration(milliseconds: 300), () {
+          engine.segColors([(255, 85, 93, _leftMask | _rightMask)]);
+          _flashTimer = Timer(const Duration(milliseconds: 230), () => setByRef(_currentRef));
+        });
+      });
     }
   }
 
@@ -778,7 +785,7 @@ class SceneRunner {
     barLoop(_leftMask, 60); barLoop(_rightMask, 110);
   }
 
-  void flickerChapacabana() {
+  void neonMotel() {
     _stopLoop(); _cancelled = false;
     final session = _sessionId;
     engine.turnOn();
@@ -807,51 +814,71 @@ class SceneRunner {
     barLoop(0, 60, 255, _leftMask, 60); barLoop(160, 0, 255, _rightMask, 110);
   }
 
-  void pelagio() {
+  void risties() {
     engine.turnOn(); engine.brightness(100);
-    var phase = 0.0;
-    _loop(const Duration(milliseconds: 80), () {
-      phase += 0.042;
-      final v = (sin(phase) + 1) / 2;
-      final r = (200 + 55 * v).round();
-      final g = (90 + 120 * v).round();
-      final b = (130 * v).round();
+    const keyframes = [
+      (200, 90,  0),
+      (255, 115, 75),
+      (255,  85, 93),
+    ];
+    const cycleMs = 18000;
+    final t0 = DateTime.now().millisecondsSinceEpoch;
+    _loop(const Duration(milliseconds: 50), () {
+      final t = ((DateTime.now().millisecondsSinceEpoch - t0) % cycleMs) / cycleMs;
+      final seg = t * 3;
+      final i = seg.floor() % 3;
+      final frac = (1 - cos((seg - seg.floor()) * pi)) / 2;
+      final c0 = keyframes[i];
+      final c1 = keyframes[(i + 1) % 3];
+      final r = (c0.$1 + (c1.$1 - c0.$1) * frac).round();
+      final g = (c0.$2 + (c1.$2 - c0.$2) * frac).round();
+      final b = (c0.$3 + (c1.$3 - c0.$3) * frac).round();
       engine.segColors([(r, g, b, _leftMask | _rightMask)]);
     });
   }
 
-  void harneven() {
-    _stopLoop(); _cancelled = false;
-    final session = _sessionId;
-    engine.turnOn();
-    Future<void> barLoop(int mask, int startDelayMs) async {
-      await Future.delayed(Duration(milliseconds: startDelayMs));
-      if (_cancelled || _sessionId != session) return;
-      while (!_cancelled && _sessionId == session) {
-        try {
-          engine.segColors([(210, 215, 255, mask)]);
-          await Future.delayed(Duration(milliseconds: 20000 + _rng.nextInt(25001)));
-          if (_cancelled || _sessionId != session) break;
-          var cut = 100 + _rng.nextInt(301);
-          while (cut > 30 && !_cancelled && _sessionId == session) {
-            engine.segColors([(160, 0, 255, mask)]);
-            await Future.delayed(Duration(milliseconds: cut));
-            if (_cancelled || _sessionId != session) break;
-            engine.segColors([(210, 215, 255, mask)]);
-            await Future.delayed(Duration(milliseconds: 40 + _rng.nextInt(81)));
-            cut = (cut * (0.35 + _rng.nextDouble() * 0.20)).round();
-          }
-          if (!_cancelled && _sessionId == session) engine.segColors([(210, 215, 255, mask)]);
-        } catch (_) {}
-      }
-    }
-    barLoop(_leftMask, 60); barLoop(_rightMask, 110);
+  void corpLab() {
+    engine.turnOn(); engine.brightness(100);
+    final t0 = DateTime.now().millisecondsSinceEpoch;
+    _loop(const Duration(milliseconds: 50), () {
+      final t = (DateTime.now().millisecondsSinceEpoch - t0) / 14000.0;
+      final v = (1 - cos(2 * pi * t)) / 2 * 0.65;
+      final r = (165 + 90 * v).round();
+      final g = (195 - 110 * v).round();
+      final b = (255 - 162 * v).round();
+      engine.segColors([(r, g, b, _leftMask | _rightMask)]);
+    });
   }
 
-  void cronus() {
+  void calmBlue() {
     engine.turnOn(); engine.brightness(100);
     _loop(const Duration(seconds: 3), () {
       engine.segColors([(165, 195, 255, _leftMask | _rightMask)]);
+    });
+  }
+
+  void richDistrict() {
+    engine.turnOn(); engine.brightness(100);
+    final t0 = DateTime.now().millisecondsSinceEpoch;
+    var nextFlickerMs = DateTime.now().millisecondsSinceEpoch + 20000 + _rng.nextInt(25001);
+    var inFlicker = false;
+    _loop(const Duration(milliseconds: 50), () {
+      final now = DateTime.now().millisecondsSinceEpoch;
+      if (!inFlicker && now >= nextFlickerMs) {
+        inFlicker = true;
+        engine.segColors([(0, 0, 0, _leftMask | _rightMask)]);
+        final cutMs = 200 + _rng.nextInt(301);
+        Future.delayed(Duration(milliseconds: cutMs), () {
+          inFlicker = false;
+          nextFlickerMs = DateTime.now().millisecondsSinceEpoch + 20000 + _rng.nextInt(25001);
+        });
+      } else if (!inFlicker) {
+        final t = (now - t0) / 12000.0;
+        final v = (1 - cos(2 * pi * t)) / 2;
+        final g2 = (80 * v).round();
+        final b2 = (180 - 90 * v).round();
+        engine.segColors([(255, g2, b2, _leftMask | _rightMask)]);
+      }
     });
   }
 
@@ -907,10 +934,11 @@ class SceneRunner {
       case 'evil':      purpleEvil(); break;
       case 'flicker-slow': flickerSlow(); break;
       case 'flicker-pink':        flickerPink();        break;
-      case 'flicker-chapacabana': flickerChapacabana(); break;
-      case 'pelagio':             pelagio();            break;
-      case 'harneven':            harneven();           break;
-      case 'cronus':       cronus();      break;
+      case 'neon-motel':          neonMotel();          break;
+      case 'risties':             risties();            break;
+      case 'corp-lab':            corpLab();            break;
+      case 'calm-blue':           calmBlue();           break;
+      case 'rich-district':       richDistrict();       break;
       case 'draconis':     draconis();    break;
       case 'autodestruct': autoDest();    break;
       case 'off':       stop();      break;
@@ -1273,7 +1301,7 @@ class _EffectsPanel extends StatelessWidget {
     ('flicker',   'Flickering',      'Damaged fluorescent',     [Color(0xFF3a3020), Color(0xFF1a1808)], Color(0xFFD4C080)),
     ('disian',       'Disian',       'Deep purple — metaplane',  [Color(0xFF1a0033), Color(0xFF330055)], Color(0xFFCCAAFF)),
     ('flicker-slow', 'Montero',      'Slow damaged lights',      [Color(0xFF3a3020), Color(0xFF1a1808)], Color(0xFFD4C080)),
-    ('cronus',       'Cronus',       'Cold blue-white static',   [Color(0xFF102030), Color(0xFF203050)], Color(0xFFBBCCFF)),
+    ('calm-blue',    'Calm Blue',    'Cold blue-white static',   [Color(0xFF102030), Color(0xFF203050)], Color(0xFFBBCCFF)),
     ('draconis',     'Draconis',     'Alien heartbeat',          [Color(0xFF102010), Color(0xFF1a3010)], Color(0xFF88DD22)),
     ('autodestruct', 'Autodestruct', 'Fast orange pulse',        [Color(0xFF3a1000), Color(0xFF7a2800)], Color(0xFFFF9933)),
   ];
@@ -1670,7 +1698,11 @@ class _SessionPerformanceScreenState extends State<SessionPerformanceScreen> wit
   void _fireTrigger(Trigger t, int index) async {
     HapticFeedback.lightImpact();
     if (t.soundId.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No sound assigned to this trigger')));
+      if (t.flashRef != null) {
+        _runner.flash(t.flashRef);
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No sound or light assigned to this trigger')));
+      }
       return;
     }
     final asset = widget.pack.audioManifest[t.soundId];
@@ -1855,6 +1887,13 @@ class _SessionPerformanceScreenState extends State<SessionPerformanceScreen> wit
                     ),
                     color: _spotifyPaused ? const Color(0xFF63B8DE) : Colors.grey,
                     onPressed: _toggleSpotify,
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.skip_next, size: 20),
+                    color: Colors.grey,
+                    onPressed: () => _wifiChannel.invokeMethod('spotifySkip'),
                     padding: EdgeInsets.zero,
                     constraints: const BoxConstraints(),
                   ),
