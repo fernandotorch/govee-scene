@@ -482,6 +482,15 @@ class SceneRunner {
     } else if (ref == 'fire-spark') {
       engine.color(255, 200, 50);
       _flashTimer = Timer(const Duration(milliseconds: 300), () => setByRef(_currentRef));
+    } else if (ref == 'red-spark') {
+      engine.color(255, 30, 20);
+      _flashTimer = Timer(const Duration(milliseconds: 300), () => setByRef(_currentRef));
+    } else if (ref == 'blue-spark') {
+      engine.color(50, 150, 255);
+      _flashTimer = Timer(const Duration(milliseconds: 300), () => setByRef(_currentRef));
+    } else if (ref == 'green-spark') {
+      engine.color(0, 255, 80);
+      _flashTimer = Timer(const Duration(milliseconds: 300), () => setByRef(_currentRef));
     } else if (ref == 'smg-burst') {
       engine.color(255, 240, 180);
       Timer(const Duration(milliseconds: 105), () { engine.color(255, 150, 10); });
@@ -919,6 +928,355 @@ class SceneRunner {
     });
   }
 
+  // ── Blackout Eve effects (ported from govee-scene-web/effect_defs.py) ──────
+
+  void busStop() {
+    engine.turnOn(); engine.brightness(100);
+    final t0 = DateTime.now().millisecondsSinceEpoch;
+    var nextSweep = t0 + 4000 + _rng.nextInt(4001);
+    int? sweepStart;
+    const sweepRise = 700, sweepHold = 150, sweepFall = 350;
+    const sweepDuration = sweepRise + sweepHold + sweepFall;
+    final shimmerPhase = List.generate(10, (_) => _rng.nextDouble() * 6.28);
+    final neonLeft = _rng.nextBool();
+    const neonBaseBlend = 0.22;
+    var nextFlicker = t0 + 3000 + _rng.nextInt(3001);
+    int? flickerStart;
+    var flickerDuration = 0;
+    var flickerStutters = 1;
+
+    _loop(const Duration(milliseconds: 80), () {
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final t = (now - t0) / 1000.0;
+
+      final base = List<List<int>>.generate(10, (i) {
+        final shimmer = (sin(t * 0.9 + shimmerPhase[i]) + 1) / 2;
+        final scale = 0.75 + 0.35 * shimmer;
+        return [(55 * scale).round(), (70 * scale).round(), (100 * scale).round()];
+      });
+
+      double neonBlend;
+      if (flickerStart == null && now >= nextFlicker) {
+        flickerStart = now;
+        flickerDuration = 120 + _rng.nextInt(231);
+        flickerStutters = [1, 1, 1, 2, 3][_rng.nextInt(5)];
+      }
+      if (flickerStart != null) {
+        final ft = now - flickerStart!;
+        final cycle = flickerDuration * 2.2;
+        if (ft >= cycle * flickerStutters) {
+          flickerStart = null;
+          nextFlicker = now + 3000 + _rng.nextInt(4001);
+          neonBlend = neonBaseBlend;
+        } else {
+          neonBlend = (ft % cycle) < flickerDuration ? 0.55 : 0.10;
+        }
+      } else {
+        neonBlend = neonBaseBlend;
+      }
+
+      final neonRange = neonLeft ? [0, 1, 2, 3, 4] : [5, 6, 7, 8, 9];
+      for (final i in neonRange) {
+        base[i][0] = (base[i][0] + (180 - base[i][0]) * neonBlend).round();
+        base[i][1] = (base[i][1] + (15 - base[i][1]) * neonBlend).round();
+        base[i][2] = (base[i][2] + (20 - base[i][2]) * neonBlend).round();
+      }
+
+      if (sweepStart == null && now >= nextSweep) {
+        sweepStart = now;
+      }
+      if (sweepStart != null) {
+        final st = now - sweepStart!;
+        if (st >= sweepDuration) {
+          sweepStart = null;
+          nextSweep = now + 4000 + _rng.nextInt(4001);
+        } else {
+          double v;
+          if (st < sweepRise) {
+            v = pow(st / sweepRise, 2).toDouble();
+          } else if (st < sweepRise + sweepHold) {
+            v = 1.0;
+          } else {
+            v = max(0.0, 1.0 - (st - sweepRise - sweepHold) / sweepFall);
+          }
+          for (var i = 0; i < 10; i++) {
+            base[i][0] = (base[i][0] + (255 - base[i][0]) * v).round();
+            base[i][1] = (base[i][1] + (255 - base[i][1]) * v).round();
+            base[i][2] = (base[i][2] + (240 - base[i][2]) * v).round();
+          }
+        }
+      }
+
+      engine.segColors([for (var i = 0; i < 10; i++) (base[i][0], base[i][1], base[i][2], 1 << i)]);
+    });
+  }
+
+  void trial() {
+    engine.turnOn();
+    const r = 220, g = 230, b = 255;
+    var phase = 0.0;
+    var glitchUntil = 0;
+    _loop(const Duration(milliseconds: 60), () {
+      phase += 0.025;
+      final v = (sin(phase) + 1) / 2;
+      final now = DateTime.now().millisecondsSinceEpoch;
+      if (now >= glitchUntil && _rng.nextDouble() < 0.015) {
+        glitchUntil = now + 40 + _rng.nextInt(141);
+      }
+      double scale;
+      if (now < glitchUntil) {
+        scale = 0.85 + 0.15 * _rng.nextDouble();
+      } else {
+        scale = 0.20 + 0.35 * v;
+      }
+      engine.segColors([((r * scale).round(), (g * scale).round(), (b * scale).round(), _leftMask | _rightMask)]);
+    });
+  }
+
+  void lyraApartment() {
+    engine.turnOn(); engine.brightness(100);
+    final t0 = DateTime.now().millisecondsSinceEpoch;
+    const blue = (35, 55, 200);
+    const pink = (210, 25, 145);
+    final shimmerPhase = List.generate(10, (_) => _rng.nextDouble() * 6.28);
+    var nextTwinkle = t0 + 3000 + _rng.nextInt(4001);
+    int? twinkleSeg;
+    int? twinkleStart;
+    var twinkleDur = 0;
+
+    _loop(const Duration(milliseconds: 80), () {
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final t = (now - t0) / 1000.0;
+
+      final packet = List<List<int>>.generate(10, (_) => [0, 0, 0]);
+      for (var h = 0; h < 5; h++) {
+        final frac = h / 4.0;
+        final baseR = blue.$1 + (pink.$1 - blue.$1) * frac;
+        final baseG = blue.$2 + (pink.$2 - blue.$2) * frac;
+        final baseB = blue.$3 + (pink.$3 - blue.$3) * frac;
+        for (final i in [h, h + 5]) {
+          final shimmer = (sin(t * 0.5 + shimmerPhase[i]) + 1) / 2;
+          final scale = 0.7 + 0.3 * shimmer;
+          packet[i] = [(baseR * scale).round(), (baseG * scale).round(), (baseB * scale).round()];
+        }
+      }
+
+      if (twinkleSeg == null && now >= nextTwinkle) {
+        twinkleSeg = _rng.nextInt(10);
+        twinkleStart = now;
+        twinkleDur = 150 + _rng.nextInt(201);
+      }
+      if (twinkleSeg != null) {
+        final tt = now - twinkleStart!;
+        if (tt >= twinkleDur) {
+          twinkleSeg = null;
+          nextTwinkle = now + 3000 + _rng.nextInt(4001);
+        } else {
+          final v = sin(pi * tt / twinkleDur);
+          const warm = (255, 190, 90);
+          final seg = packet[twinkleSeg!];
+          packet[twinkleSeg!] = [
+            (seg[0] + (warm.$1 - seg[0]) * v).round(),
+            (seg[1] + (warm.$2 - seg[1]) * v).round(),
+            (seg[2] + (warm.$3 - seg[2]) * v).round(),
+          ];
+        }
+      }
+
+      engine.segColors([for (var i = 0; i < 10; i++) (packet[i][0], packet[i][1], packet[i][2], 1 << i)]);
+    });
+  }
+
+  void chase() {
+    engine.turnOn(); engine.brightness(100);
+    const off = (4, 3, 6);
+    final t0 = DateTime.now().millisecondsSinceEpoch;
+    var leftNext = t0;
+    String? leftKind;
+    var leftStart = 0;
+    var leftDur = 0;
+    var rightNext = t0 + 150;
+    String? rightKind;
+    var rightStart = 0;
+    var rightDur = 0;
+
+    (int, int, int) colorFor(String kind) {
+      switch (kind) {
+        case 'red':  return (255, 10, 5);
+        case 'blue': return (10, 60, 255);
+        default:     return (255, 250, 235); // white
+      }
+    }
+
+    _loop(const Duration(milliseconds: 100), () {
+      final now = DateTime.now().millisecondsSinceEpoch;
+
+      var (lr, lg, lb) = off;
+      if (leftKind == null && now >= leftNext) {
+        final roll = _rng.nextDouble();
+        leftKind = roll < 0.42 ? 'red' : (roll < 0.84 ? 'blue' : 'white');
+        leftDur = leftKind == 'white' ? 100 + _rng.nextInt(61) : 120 + _rng.nextInt(81);
+        leftStart = now;
+        leftNext = now + 100 + _rng.nextInt(181);
+      }
+      if (leftKind != null) {
+        if (now - leftStart >= leftDur) {
+          leftKind = null;
+        } else {
+          (lr, lg, lb) = colorFor(leftKind!);
+        }
+      }
+
+      var (rr, rg, rb) = off;
+      if (rightKind == null && now >= rightNext) {
+        final roll = _rng.nextDouble();
+        rightKind = roll < 0.42 ? 'red' : (roll < 0.84 ? 'blue' : 'white');
+        rightDur = rightKind == 'white' ? 100 + _rng.nextInt(61) : 120 + _rng.nextInt(81);
+        rightStart = now;
+        rightNext = now + 100 + _rng.nextInt(181);
+      }
+      if (rightKind != null) {
+        if (now - rightStart >= rightDur) {
+          rightKind = null;
+        } else {
+          (rr, rg, rb) = colorFor(rightKind!);
+        }
+      }
+
+      engine.segColors([(lr, lg, lb, _leftMask), (rr, rg, rb, _rightMask)]);
+    });
+  }
+
+  void meetingRoland() {
+    engine.turnOn(); engine.brightness(100);
+    const base = (42, 36, 85);
+    const light = (255, 245, 210);
+    const pulseRise = 180, pulseHold = 50, pulseFall = 320;
+    const pulseDuration = pulseRise + pulseHold + pulseFall;
+
+    final now0 = DateTime.now().millisecondsSinceEpoch;
+    var active = true;
+    var phaseEnd = now0 + 3000 + _rng.nextInt(3001);
+    var nextPulse = now0;
+    int? pulseStart;
+
+    _loop(const Duration(milliseconds: 60), () {
+      final now = DateTime.now().millisecondsSinceEpoch;
+
+      if (now >= phaseEnd) {
+        active = !active;
+        if (active) {
+          phaseEnd = now + 3000 + _rng.nextInt(3001);
+          nextPulse = now;
+        } else {
+          phaseEnd = now + 2000 + _rng.nextInt(3001);
+          pulseStart = null;
+        }
+      }
+
+      var v = 0.0;
+      if (active) {
+        if (pulseStart == null && now >= nextPulse) {
+          pulseStart = now;
+        }
+        if (pulseStart != null) {
+          final pt = now - pulseStart!;
+          if (pt >= pulseDuration) {
+            pulseStart = null;
+            nextPulse = now + 500 + _rng.nextInt(501);
+          } else if (pt < pulseRise) {
+            v = pt / pulseRise;
+          } else if (pt < pulseRise + pulseHold) {
+            v = 1.0;
+          } else {
+            v = max(0.0, 1.0 - (pt - pulseRise - pulseHold) / pulseFall);
+          }
+        }
+      }
+
+      final r = (base.$1 + (light.$1 - base.$1) * v).round();
+      final g = (base.$2 + (light.$2 - base.$2) * v).round();
+      final b = (base.$3 + (light.$3 - base.$3) * v).round();
+      engine.segColors([(r, g, b, _leftMask | _rightMask)]);
+    });
+  }
+
+  void happyJacks() {
+    engine.turnOn(); engine.brightness(100);
+    final t0 = DateTime.now().millisecondsSinceEpoch;
+
+    const keyframes = [
+      (200, 110, 20), (255, 180, 60), (255, 60, 30), (255, 90, 160),
+    ];
+    final leftCycle = 4500 + _rng.nextInt(1501);
+    final rightCycle = 4500 + _rng.nextInt(1501);
+    final leftPhase = _rng.nextDouble();
+    final rightPhase = _rng.nextDouble();
+
+    var nextFlash = t0 + 20000 + _rng.nextInt(15001);
+    int? flashStart;
+    String? flashSide;
+    var flashCoinTimes = <int>[];
+    const flashCoinDur = 90;
+    var flashTotal = 0;
+
+    List<int> breathe(int t, int cycle, double phase) {
+      final tt = ((t / cycle) + phase) % 1.0;
+      final seg = tt * keyframes.length;
+      final i = seg.floor() % keyframes.length;
+      final frac = (1 - cos((seg - seg.floor()) * pi)) / 2;
+      final c0 = keyframes[i];
+      final c1 = keyframes[(i + 1) % keyframes.length];
+      return [
+        (c0.$1 + (c1.$1 - c0.$1) * frac).round(),
+        (c0.$2 + (c1.$2 - c0.$2) * frac).round(),
+        (c0.$3 + (c1.$3 - c0.$3) * frac).round(),
+      ];
+    }
+
+    _loop(const Duration(milliseconds: 80), () {
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final t = now - t0;
+
+      final lc = breathe(t, leftCycle, leftPhase);
+      final rc = breathe(t, rightCycle, rightPhase);
+
+      if (flashStart == null && now >= nextFlash) {
+        flashStart = now;
+        flashSide = _rng.nextBool() ? 'left' : 'right';
+        final nCoins = 4 + _rng.nextInt(2);
+        var offset = 0;
+        flashCoinTimes = [];
+        for (var k = 0; k < nCoins; k++) {
+          flashCoinTimes.add(offset);
+          offset += 90 + _rng.nextInt(71);
+        }
+        flashTotal = offset + flashCoinDur;
+      }
+      if (flashStart != null) {
+        final ft = now - flashStart!;
+        if (ft >= flashTotal) {
+          flashStart = null;
+          nextFlash = now + 20000 + _rng.nextInt(15001);
+        } else {
+          var v = 0.0;
+          for (final cTime in flashCoinTimes) {
+            final dt = ft - cTime;
+            if (dt >= 0 && dt < flashCoinDur) {
+              v = max(v, sin(pi * dt / flashCoinDur));
+            }
+          }
+          final target = flashSide == 'left' ? lc : rc;
+          for (var k = 0; k < 3; k++) {
+            target[k] = (target[k] + (255 - target[k]) * v).round();
+          }
+        }
+      }
+
+      engine.segColors([(lc[0], lc[1], lc[2], _leftMask), (rc[0], rc[1], rc[2], _rightMask)]);
+    });
+  }
+
   void setByRef(String ref) {
     _stopLoop();
     _currentRef = ref;
@@ -941,6 +1299,12 @@ class SceneRunner {
       case 'rich-district':       richDistrict();       break;
       case 'draconis':     draconis();    break;
       case 'autodestruct': autoDest();    break;
+      case 'bus-stop':        busStop();       break;
+      case 'trial':            trial();         break;
+      case 'lyra-apartment':   lyraApartment(); break;
+      case 'chase':            chase();         break;
+      case 'meeting-roland':   meetingRoland(); break;
+      case 'happy-jacks':      happyJacks();    break;
       case 'off':       stop();      break;
       default: engine.turnOn(); engine.color(200, 200, 200); engine.brightness(50);
     }
