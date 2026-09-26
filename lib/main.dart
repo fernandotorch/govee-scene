@@ -4,12 +4,16 @@ import 'dart:io';
 import 'dart:math';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:archive/archive.dart';
 
 import 'spotify_service.dart';
+import 'session_controller.dart';
+import 'session_model.dart';
+import 'session_renderer.dart';
 
 Future<Directory> packStorageDir() async {
   if (Platform.isAndroid) return (await getExternalStorageDirectory())!;
@@ -34,88 +38,6 @@ const _controlPort   = 4003;
 const _leftMask  = 0x01F;
 const _rightMask = 0x3E0;
 
-// ── Models ───────────────────────────────────────────────────────────────────
-
-class SessionPack {
-  final String name;
-  final List<SessionScene> scenes;
-  final Map<String, AudioAsset> audioManifest;
-  final String directoryPath;
-
-  SessionPack({required this.name, required this.scenes, required this.audioManifest, required this.directoryPath});
-
-  factory SessionPack.fromJson(Map<String, dynamic> json, String dirPath) {
-    return SessionPack(
-      name: json['name'],
-      directoryPath: dirPath,
-      scenes: (json['scenes'] as List).map((s) => SessionScene.fromJson(s)).toList(),
-      audioManifest: (json['audio_manifest'] as Map<String, dynamic>).map(
-        (k, v) => MapEntry(k, AudioAsset.fromJson(v))
-      ),
-    );
-  }
-}
-
-class SessionScene {
-  final String id, name;
-  final String goveeRef;
-  final String? ambientId;
-  final int ambientVolume;
-  final SpotifyConfig spotify;
-  final List<Trigger> triggers;
-
-  SessionScene({
-    required this.id, required this.name, required this.goveeRef,
-    this.ambientId, required this.ambientVolume, required this.spotify, required this.triggers
-  });
-
-  factory SessionScene.fromJson(Map<String, dynamic> json) {
-    return SessionScene(
-      id: json['id'],
-      name: json['name'],
-      goveeRef: json['govee_effect']['ref'],
-      ambientId: json['ambient'],
-      ambientVolume: json['ambient_volume'] ?? 0,
-      spotify: json['spotify'] != null
-          ? SpotifyConfig.fromJson(json['spotify'])
-          : SpotifyConfig(uri: '', volume: 50),
-      triggers: (json['triggers'] as List).map((t) => Trigger.fromJson(t)).toList(),
-    );
-  }
-}
-
-class SpotifyConfig {
-  final String uri;
-  final int volume;
-  final int startTime;
-  SpotifyConfig({required this.uri, required this.volume, this.startTime = 0});
-  factory SpotifyConfig.fromJson(Map<String, dynamic> json) =>
-      SpotifyConfig(
-        uri: json['uri'] ?? '',
-        volume: json['volume'] ?? 50,
-        startTime: json['start_time'] ?? 0,
-      );
-}
-
-class Trigger {
-  final String id, name, soundId;
-  final String? flashRef;
-  Trigger({required this.id, required this.name, required this.soundId, this.flashRef});
-  factory Trigger.fromJson(Map<String, dynamic> json) => Trigger(
-    id: json['id'],
-    name: json['name'],
-    soundId: json['sound'],
-    flashRef: json['govee_flash']?['ref'],
-  );
-}
-
-class AudioAsset {
-  final String file;
-  final int durationMs;
-  AudioAsset({required this.file, required this.durationMs});
-  factory AudioAsset.fromJson(Map<String, dynamic> json) =>
-      AudioAsset(file: json['file'], durationMs: json['duration_ms'] ?? 0);
-}
 
 // ── Audio Engine ──────────────────────────────────────────────────────────────
 
@@ -2095,273 +2017,76 @@ class SessionPerformanceScreen extends StatefulWidget {
   State<SessionPerformanceScreen> createState() => _SessionPerformanceScreenState();
 }
 
-class _SessionPerformanceScreenState extends State<SessionPerformanceScreen> with TickerProviderStateMixin, WidgetsBindingObserver {
-  final SpotifyService _spotify = SpotifyService.create();
-  late final SceneRunner _runner;
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) {
-      _spotify.connect();
-      // Re-trigger the current scene animation to wake up the timer/engine
-      _runner.setByRef(widget.pack.scenes[_currentIndex].goveeRef);
-    }
-  }
-
-  late final AudioEngine _audio;
-  int _currentIndex = 0; int _currentRampId = 0;
-  double _ambientVol = 50, _triggerVol = 80;
-  bool _spotifyPaused = false;
-  bool _hasScene = false;
-  int _duckGeneration = 0;
-  bool _isStopped = false;
-
-
-
-  Future<void> _rampAmbient(double from, double to, {int steps = 6, int stepMs = 30}) async {
-    final rampId = ++_currentRampId;
-    for (int i = 1; i <= steps; i++) {
-      if (rampId != _currentRampId) return;
-      final v = from + (to - from) * i / steps;
-      _audio.setAmbientVolume(v);
-      if (i < steps) await Future.delayed(Duration(milliseconds: stepMs));
-    }
-  }
-
-  // How far the bed drops while a trigger is playing. 0.35 = -9 dB.
-  static const double _ambientDuckFactor = 0.35;
-
-  // Number of triggers currently holding the duck open.
-  int _activeDucks = 0;
-
-
-  void _duckAmbientFor(AudioPlayer player, int assetDurationMs) {
-    final gen = _duckGeneration;
-    _activeDucks++;
-    if (_activeDucks == 1) _spotify.duckStart();
-    // Cancel any ramp in flight (a scene fade-in, or another trigger's release).
-    // setAmbientVolume alone does not stop _rampAmbient, so without this the
-    // ramp's next step would undo the duck ~30 ms later.
-    _currentRampId++;
-    _audio.setAmbientVolume((_ambientVol / 100.0) * _ambientDuckFactor);
-
-    var released = false;
-    void release() {
-      if (released) return;
-      released = true;
-      if (gen != _duckGeneration) return;
-      _activeDucks--;
-      if (_activeDucks == 0) _spotify.duckEnd();
-      if (_activeDucks > 0) return; // another trigger still holding the duck
-      if (!mounted) return;
-      // Re-read rather than using a value captured at fire time: the scene may
-      // have changed under us, or the slider may have moved. Either way the bed
-      // belongs at whatever level is current now.
-      // If the scene we landed in has no bed of its own, the ambient player is
-      // still looping the *previous* scene's bed at zero — lifting the duck
-      // would bring it back. Leave it silent.
-      final scene = widget.pack.scenes[_currentIndex];
-      if (scene.ambientId == null) {
-        _audio.setAmbientVolume(0);
-        return;
-      }
-      final current = _ambientVol / 100.0;
-      _rampAmbient(current * _ambientDuckFactor, current, steps: 12, stepMs: 35);
-    }
-
-    player.onPlayerComplete.first.then((_) => release());
-
-    // Safety net: the 6 trigger players are recycled in a ring, and
-    // AudioEngine.playTrigger calls stop() on reuse. stop() does NOT emit
-    // onPlayerComplete, so without this the duck would never lift.
-    final fallbackMs = (assetDurationMs > 0 ? assetDurationMs : 5000) + 750;
-    Future.delayed(Duration(milliseconds: fallbackMs), release);
-  }
-  final Map<int, AnimationController> _activeTriggers = {};
+class _SessionPerformanceScreenState extends State<SessionPerformanceScreen>
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
+  late final SessionController _controller;
+  late final SessionRenderer _renderer;
+  late final Ticker _ticker;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _runner = SceneRunner(widget.engine);
-    _audio = AudioEngine();
-    _enterScene(0);
-  }
-
-    void _enterScene(int index) {
-    // _activeDucks deliberately survives the scene change: a trigger that is
-    // still playing must keep the new scene's bed ducked until it finishes.
-    final scene = widget.pack.scenes[index];
-
-    // 1. Instant UI and Light Update
-    setState(() {
-      _currentIndex = index;
-      _hasScene = true;
-      _ambientVol = scene.ambientVolume.toDouble();
-      _isStopped = false;
+    _ticker = createTicker((_) {
+      if (_controller.activeTriggers.isEmpty && _ticker.isTicking) {
+        _ticker.stop();
+      }
+      setState(() {});
     });
-    _runner.setByRef(scene.goveeRef);
-
-    // 2. Fire-and-forget Audio Commands (Parallel)
-    
-    // Spotify (Zero-lag path)
-    if (scene.spotify.uri.isNotEmpty) {
-      _spotify.play(scene.spotify.uri, scene.spotify.startTime);
-      setState(() => _spotifyPaused = false);
-    }
-
-    // Ambient transition (Sequential but non-blocking for the rest of the app)
-    _performAmbientTransition(scene);
+    _controller = SessionController(widget.pack);
+    _controller.addListener(_onControllerChanged);
+    _renderer = SessionRenderer(
+      _controller,
+      SceneRunner(widget.engine),
+      AudioEngine(),
+      SpotifyService.create(),
+    );
+    _controller.enterScene(0);
   }
 
-  Future<void> _performAmbientTransition(SessionScene scene) async {
-    // If we're already playing something, do a quick fade out or just stop
-    // To minimize lag, we just stop the old and start the new instantly.
-    if (scene.ambientId != null) {
-      final asset = widget.pack.audioManifest[scene.ambientId];
-      if (asset != null) {
-        final path = '${widget.pack.directoryPath}/${asset.file}';
-        await _audio.playAmbient(path, 0.0);
-        // If a trigger from the outgoing scene is still ringing out, fade in to
-        // the ducked level; its release will lift the bed the rest of the way.
-        final full = scene.ambientVolume / 100.0;
-        final ceiling = _activeDucks > 0 ? full * _ambientDuckFactor : full;
-        _rampAmbient(0.0, ceiling);
-      }
+  void _onControllerChanged() {
+    if (_controller.activeTriggers.isNotEmpty) {
+      if (!_ticker.isTicking) _ticker.start();
     } else {
-      // Cancel any fade still stepping, or it will keep raising the volume of
-      // the outgoing scene's bed after the cut.
-      _currentRampId++;
-      _audio.setAmbientVolume(0);
+      if (_ticker.isTicking) _ticker.stop();
     }
+    setState(() {});
   }
 
-
-
-  void _fireTrigger(Trigger t, int index) async {
-    HapticFeedback.lightImpact();
-    if (t.soundId.isEmpty) {
-      if (t.flashRef != null) {
-        _runner.flash(t.flashRef);
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No sound or light assigned to this trigger')));
-      }
-      return;
-    }
-    final asset = widget.pack.audioManifest[t.soundId];
-    if (asset == null) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Sound not found: ${t.soundId}')));
-      return;
-    }
-    if (t.flashRef != null) {
-      Future.delayed(const Duration(milliseconds: 550), () => _runner.flash(t.flashRef));
-    }
-    final path = '${widget.pack.directoryPath}/${asset.file}';
-    try {
-      final ctrl = AnimationController(vsync: this, duration: const Duration(seconds: 10));
-      _activeTriggers[index]?.dispose();
-      setState(() => _activeTriggers[index] = ctrl);
-
-      final player = await _audio.playTrigger(path);
-      _duckAmbientFor(player, asset.durationMs);
-
-      Future.any([
-        player.onDurationChanged.first,
-        Future.delayed(const Duration(milliseconds: 500), () => Duration.zero),
-      ]).then((d) {
-        if (!mounted) return;
-        ctrl.duration = d.inMilliseconds > 0 ? d : const Duration(seconds: 5);
-        ctrl.forward();
-      });
-
-      player.onPlayerComplete.first.then((_) {
-        if (mounted) setState(() => _activeTriggers.remove(index)?.dispose());
-      });
-    } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Playback error: $e')));
-    }
-  }
-
-  static const int _spotifyNudgeMs = 10000;
-
-  void _skipForward() {
-    HapticFeedback.lightImpact();
-    // seekToRelativePosition is relative, so repeated presses stack: three
-    // presses is +30 s. No local position tracking needed.
-    _spotify.seekRelative(_spotifyNudgeMs);
-  }
-
-  void _toggleSpotify() {
-    setState(() => _spotifyPaused = !_spotifyPaused);
-    if (_spotifyPaused) {
-      _spotify.pause();
-    } else {
-      _spotify.resume();
-    }
-  }
-
-  Future<void> _toggleStopAll() async {
-    HapticFeedback.mediumImpact();
-    if (_isStopped) {
-      final scene = widget.pack.scenes[_currentIndex];
-      setState(() => _isStopped = false);
-      _runner.setByRef(scene.goveeRef);
-      if (scene.ambientId != null) {
-        await _audio.setAmbientVolume(0);
-        await _audio.resumeAmbient();
-        _rampAmbient(0.0, _ambientVol / 100.0);
-      }
-      if (scene.spotify.uri.isNotEmpty) {
-        _spotify.resume();
-        setState(() => _spotifyPaused = false);
-      }
-    } else {
-      setState(() {
-        _isStopped = true;
-        _spotifyPaused = true;
-      });
-      _runner.stop();
-      _currentRampId++;
-      _audio.pauseAmbient();
-      _audio.stopTriggers();
-      for (final c in _activeTriggers.values) {
-        c.dispose();
-      }
-      setState(() {
-        _activeTriggers.clear();
-      });
-      _duckGeneration++;
-      if (_activeDucks > 0) {
-        _activeDucks = 0;
-        await _spotify.duckEnd();
-      }
-      _spotify.pause();
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _renderer.onAppResumed();
     }
   }
 
   @override
   void dispose() {
-    _spotify.pause();
-    for (final c in _activeTriggers.values) { c.dispose(); }
-    _runner.dispose();
-    _audio.dispose();
+    _renderer.dispose();
+    _controller.removeListener(_onControllerChanged);
+    _controller.dispose();
     WidgetsBinding.instance.removeObserver(this);
+    _ticker.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final scene = widget.pack.scenes[_currentIndex];
-    final int len = widget.pack.scenes.length;
+    final scene = _controller.scene;
+    final int len = _controller.pack.scenes.length;
     final bool isCircular = len > 1;
-    final int prevIndex = (_currentIndex - 1 + len) % len;
-    final int nextIndex = (_currentIndex + 1) % len;
-    final prev = isCircular ? widget.pack.scenes[prevIndex] : null;
-    final next = isCircular ? widget.pack.scenes[nextIndex] : null;
+    final int prevIndex = (_controller.sceneIndex - 1 + len) % len;
+    final int nextIndex = (_controller.sceneIndex + 1) % len;
+    final prev = isCircular ? _controller.pack.scenes[prevIndex] : null;
+    final next = isCircular ? _controller.pack.scenes[nextIndex] : null;
 
     return CallbackShortcuts(
       bindings: {
         const SingleActivator(LogicalKeyboardKey.escape): () => Navigator.maybePop(context),
-        const SingleActivator(LogicalKeyboardKey.space): _toggleStopAll,
+        const SingleActivator(LogicalKeyboardKey.space): () {
+          HapticFeedback.mediumImpact();
+          _controller.toggleStopAll();
+        },
       },
       child: Focus(
         autofocus: true,
@@ -2385,152 +2110,160 @@ class _SessionPerformanceScreenState extends State<SessionPerformanceScreen> wit
                       ),
                       const SizedBox(width: 8),
                       GestureDetector(
-                        onTap: prev != null ? () => _enterScene(prevIndex) : null,
-                    child: SizedBox(
-                      width: 88,
-                      child: Row(children: [
-                        Icon(Icons.arrow_back_ios, size: 13, color: prev != null ? Colors.white54 : Colors.white12),
-                        const SizedBox(width: 4),
-                        Expanded(child: Text(prev?.name ?? '', style: const TextStyle(fontSize: 10, color: Colors.white38), overflow: TextOverflow.ellipsis)),
-                      ]),
-                    ),
-                  ),
-                  Expanded(child: Column(children: [
-                    Text(scene.name.toUpperCase(), style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, letterSpacing: 2), textAlign: TextAlign.center),
-                    Text(scene.goveeRef, style: const TextStyle(fontSize: 10, color: Color(0xFF63B8DE))),
-                  ])),
-                  GestureDetector(
-                    onTap: next != null ? () => _enterScene(nextIndex) : null,
-                    child: SizedBox(
-                      width: 88,
-                      child: Row(mainAxisAlignment: MainAxisAlignment.end, children: [
-                        Expanded(child: Text(next?.name ?? '', style: const TextStyle(fontSize: 10, color: Colors.white38), overflow: TextOverflow.ellipsis, textAlign: TextAlign.right)),
-                        const SizedBox(width: 4),
-                        Icon(Icons.arrow_forward_ios, size: 13, color: next != null ? Colors.white54 : Colors.white12),
-                      ]),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            Center(
-              child: IconButton(
-                icon: Icon(_isStopped ? Icons.play_arrow : Icons.stop, size: 32),
-                color: _isStopped ? const Color(0xFF63B8DE) : Colors.white54,
-                tooltip: _isStopped ? 'Resume scene' : 'Stop everything',
-                onPressed: _toggleStopAll,
-              ),
-            ),
-            const Divider(color: Colors.white12),
-            // Trigger Grid
-            Expanded(
-              child: GridView.builder(
-                padding: const EdgeInsets.all(24),
-                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                  crossAxisCount: 2, crossAxisSpacing: 16, mainAxisSpacing: 16, childAspectRatio: 1.8,
-                ),
-                itemCount: scene.triggers.length,
-                itemBuilder: (_, i) {
-                  final t = scene.triggers[i];
-                  return Stack(
-                    children: [
-                      SizedBox.expand(
-                        child: ElevatedButton(
-                          onPressed: () => _fireTrigger(t, i),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFF1A1A1A),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                          ),
-                          child: Text(t.name, textAlign: TextAlign.center, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                        onTap: prev != null ? () => _controller.enterScene(prevIndex) : null,
+                        child: SizedBox(
+                          width: 88,
+                          child: Row(children: [
+                            Icon(Icons.arrow_back_ios, size: 13, color: prev != null ? Colors.white54 : Colors.white12),
+                            const SizedBox(width: 4),
+                            Expanded(child: Text(prev?.name ?? '', style: const TextStyle(fontSize: 10, color: Colors.white38), overflow: TextOverflow.ellipsis)),
+                          ]),
                         ),
                       ),
-                      if (_activeTriggers.containsKey(i))
-                        Positioned.fill(
-                          child: IgnorePointer(
-                            child: AnimatedBuilder(
-                              animation: _activeTriggers[i]!,
-                              builder: (_, _) => CustomPaint(
-                                painter: _TriggerBorderPainter(_activeTriggers[i]!.value),
-                                child: const SizedBox.expand(),
+                      Expanded(child: Column(children: [
+                        Text(scene.name.toUpperCase(), style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, letterSpacing: 2), textAlign: TextAlign.center),
+                        Text(scene.goveeRef, style: const TextStyle(fontSize: 10, color: Color(0xFF63B8DE))),
+                      ])),
+                      GestureDetector(
+                        onTap: next != null ? () => _controller.enterScene(nextIndex) : null,
+                        child: SizedBox(
+                          width: 88,
+                          child: Row(mainAxisAlignment: MainAxisAlignment.end, children: [
+                            Expanded(child: Text(next?.name ?? '', style: const TextStyle(fontSize: 10, color: Colors.white38), overflow: TextOverflow.ellipsis, textAlign: TextAlign.right)),
+                            const SizedBox(width: 4),
+                            Icon(Icons.arrow_forward_ios, size: 13, color: next != null ? Colors.white54 : Colors.white12),
+                          ]),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Center(
+                  child: IconButton(
+                    icon: Icon(_controller.isStopped ? Icons.play_arrow : Icons.stop, size: 32),
+                    color: _controller.isStopped ? const Color(0xFF63B8DE) : Colors.white54,
+                    tooltip: _controller.isStopped ? 'Resume scene' : 'Stop everything',
+                    onPressed: () {
+                      HapticFeedback.mediumImpact();
+                      _controller.toggleStopAll();
+                    },
+                  ),
+                ),
+                const Divider(color: Colors.white12),
+                // Trigger Grid
+                Expanded(
+                  child: GridView.builder(
+                    padding: const EdgeInsets.all(24),
+                    gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: 2, crossAxisSpacing: 16, mainAxisSpacing: 16, childAspectRatio: 1.8,
+                    ),
+                    itemCount: scene.triggers.length,
+                    itemBuilder: (_, i) {
+                      final t = scene.triggers[i];
+                      final active = _controller.activeTriggers[i];
+                      return Stack(
+                        children: [
+                          SizedBox.expand(
+                            child: ElevatedButton(
+                              onPressed: () {
+                                HapticFeedback.lightImpact();
+                                final err = _controller.fireTrigger(i);
+                                if (err != null) {
+                                  ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
+                                }
+                              },
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: const Color(0xFF1A1A1A),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                               ),
+                              child: Text(t.name, textAlign: TextAlign.center, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
                             ),
                           ),
+                          if (active != null)
+                            Positioned.fill(
+                              child: IgnorePointer(
+                                child: CustomPaint(
+                                  painter: _TriggerBorderPainter(
+                                    (DateTime.now().difference(active.startedAt).inMicroseconds /
+                                            active.duration.inMicroseconds)
+                                        .clamp(0.0, 1.0),
+                                  ),
+                                  child: const SizedBox.expand(),
+                                ),
+                              ),
+                            ),
+                        ],
+                      );
+                    },
+                  ),
+                ),
+                // Live Mixer
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
+                  decoration: const BoxDecoration(
+                    color: Color(0xFF111111),
+                    borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+                  ),
+                  child: Column(children: [
+                    Row(children: [
+                      const Icon(Icons.music_note, size: 18, color: Colors.grey),
+                      const Expanded(
+                        child: Text('Spotify', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                      ),
+                      IconButton(
+                        icon: Icon(
+                          _controller.spotifyPaused ? Icons.play_arrow : Icons.pause,
+                          size: 20,
                         ),
-                    ],
-                  );
-                },
-              ),
+                        color: _controller.spotifyPaused ? const Color(0xFF63B8DE) : Colors.grey,
+                        onPressed: _controller.toggleSpotifyPause,
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(),
+                      ),
+                      const SizedBox(width: 12),
+                      IconButton(
+                        icon: const Icon(Icons.forward_10, size: 20),
+                        color: Colors.grey,
+                        onPressed: () {
+                          HapticFeedback.lightImpact();
+                          _controller.seekSpotify(10000);
+                        },
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(),
+                      ),
+                      const SizedBox(width: 12),
+                      IconButton(
+                        icon: const Icon(Icons.skip_next, size: 20),
+                        color: Colors.grey,
+                        onPressed: _controller.skipSpotify,
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(),
+                      ),
+                      const SizedBox(width: 24),
+                    ]),
+                    Row(children: [
+                      const Icon(Icons.waves, size: 18, color: Colors.grey),
+                      Expanded(child: Slider(
+                        value: _controller.ambientVolume, min: 0, max: 100, activeColor: const Color(0xFF63B8DE),
+                        onChanged: (v) => _controller.setAmbientVolume(v),
+                      )),
+                      Text('${_controller.ambientVolume.round()}%', style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                      const SizedBox(width: 44),
+                    ]),
+                    Row(children: [
+                      const Icon(Icons.bolt, size: 18, color: Colors.grey),
+                      Expanded(child: Slider(
+                        value: _controller.triggerVolume, min: 0, max: 100, activeColor: const Color(0xFF63B8DE),
+                        onChanged: (v) => _controller.setTriggerVolume(v),
+                      )),
+                      Text('${_controller.triggerVolume.round()}%', style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                      const SizedBox(width: 44),
+                    ]),
+                  ]),
+                ),
+              ],
             ),
-            // Live Mixer
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
-              decoration: const BoxDecoration(
-                color: Color(0xFF111111),
-                borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-              ),
-              child: Column(children: [
-                Row(children: [
-                  const Icon(Icons.music_note, size: 18, color: Colors.grey),
-                  const Expanded(
-                    child: Text('Spotify', style: TextStyle(fontSize: 12, color: Colors.grey)),
-                  ),
-                  IconButton(
-                    icon: Icon(
-                      _spotifyPaused ? Icons.play_arrow : Icons.pause,
-                      size: 20,
-                    ),
-                    color: _spotifyPaused ? const Color(0xFF63B8DE) : Colors.grey,
-                    onPressed: _toggleSpotify,
-                    padding: EdgeInsets.zero,
-                    constraints: const BoxConstraints(),
-                  ),
-                  const SizedBox(width: 12),
-                  IconButton(
-                    icon: const Icon(Icons.forward_10, size: 20),
-                    color: Colors.grey,
-                    onPressed: _skipForward,
-                    padding: EdgeInsets.zero,
-                    constraints: const BoxConstraints(),
-                  ),
-                  const SizedBox(width: 12),
-                  IconButton(
-                    icon: const Icon(Icons.skip_next, size: 20),
-                    color: Colors.grey,
-                    onPressed: () => _spotify.skip(),
-                    padding: EdgeInsets.zero,
-                    constraints: const BoxConstraints(),
-                  ),
-                  const SizedBox(width: 24),
-                ]),
-                Row(children: [
-                  const Icon(Icons.waves, size: 18, color: Colors.grey),
-                  Expanded(child: Slider(
-                    value: _ambientVol, min: 0, max: 100, activeColor: const Color(0xFF63B8DE),
-                    onChanged: (v) {
-                      setState(() => _ambientVol = v);
-                      _audio.setAmbientVolume(v / 100.0);
-                    },
-                  )),
-                  Text('${_ambientVol.round()}%', style: const TextStyle(fontSize: 12, color: Colors.grey)),
-                  const SizedBox(width: 44),
-                ]),
-                Row(children: [
-                  const Icon(Icons.bolt, size: 18, color: Colors.grey),
-                  Expanded(child: Slider(
-                    value: _triggerVol, min: 0, max: 100, activeColor: const Color(0xFF63B8DE),
-                    onChanged: (v) {
-                      setState(() => _triggerVol = v);
-                      _audio.setTriggerVolume(v / 100.0);
-                    },
-                  )),
-                  Text('${_triggerVol.round()}%', style: const TextStyle(fontSize: 12, color: Colors.grey)),
-                  const SizedBox(width: 44),
-                ]),
-              ]),
-            ),
-          ],
-        ),
-      ),
+          ),
         ),
       ),
     );
