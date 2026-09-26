@@ -9,6 +9,15 @@ import 'package:audioplayers/audioplayers.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:archive/archive.dart';
 
+import 'spotify_service.dart';
+
+Future<Directory> packStorageDir() async {
+  if (Platform.isAndroid) return (await getExternalStorageDirectory())!;
+  final dir = Directory('${(await getApplicationSupportDirectory()).path}/sessions');
+  await dir.create(recursive: true);
+  return dir;
+}
+
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
@@ -143,9 +152,11 @@ class AudioEngine {
       ),
     );
 
-    _ambientPlayer.setAudioContext(ambientContext);
-    for (final p in _triggerPlayers) {
-      p.setAudioContext(triggerContext);
+    if (Platform.isAndroid || Platform.isIOS) {
+      _ambientPlayer.setAudioContext(ambientContext);
+      for (final p in _triggerPlayers) {
+        p.setAudioContext(triggerContext);
+      }
     }
   }
 
@@ -178,6 +189,12 @@ class AudioEngine {
     await player.setVolume(_triggerVolume);
     player.play(DeviceFileSource(path)); // intentionally not awaited — return before event fires
     return player;
+  }
+
+  Future<void> stopTriggers() async {
+    for (final p in _triggerPlayers) {
+      await p.stop();
+    }
   }
 
   Future<void> stopAll() async {
@@ -1331,8 +1348,7 @@ class SceneRunner {
 }
 
 Future<void> extractAndLoadSession(BuildContext context, Uint8List zipBytes, GoveeEngine engine) async {
-  final dir = await getExternalStorageDirectory();
-  if (dir == null) return;
+  final dir = await packStorageDir();
   final sessionDir = Directory('${dir.path}/session');
   if (!context.mounted) return;
   ScaffoldMessenger.of(context).showSnackBar(ApiResponseSnackBar(message: 'Extracting session pack…'));
@@ -1382,10 +1398,12 @@ class TheaterScreen extends StatefulWidget {
 }
 
 class _TheaterScreenState extends State<TheaterScreen> with WidgetsBindingObserver {
+  final SpotifyService _spotify = SpotifyService.create();
   final _engine = GoveeEngine();
   late final SceneRunner _runner;
   bool _discovering = true;
   bool _found = false;
+  bool _loginCancelled = false;
 
   Timer? _spotifyTimer;
 
@@ -1400,17 +1418,27 @@ class _TheaterScreenState extends State<TheaterScreen> with WidgetsBindingObserv
   }
 
   void _connectSpotify() {
-    _wifiChannel.invokeMethod('spotifyConnect');
+    _spotify.connect();
   }
 
   void _refreshSpotify() {
-    _wifiChannel.invokeMethod('spotifyRefresh');
+    _spotify.refresh();
+  }
+
+  Future<void> _loginSpotify() async {
+    _loginCancelled = false;
+    final ok = await _spotify.login();
+    if (!ok && !_loginCancelled && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Spotify login failed — see the terminal log')),
+      );
+    }
   }
 
   @override
   void dispose() {
     _spotifyTimer?.cancel();
-    _wifiChannel.invokeMethod('spotifyDisconnect');
+    _spotify.disconnect();
     WidgetsBinding.instance.removeObserver(this);
     _runner.dispose();
     _engine.dispose();
@@ -1433,8 +1461,7 @@ class _TheaterScreenState extends State<TheaterScreen> with WidgetsBindingObserv
 
   Future<void> _loadSession() async {
     try {
-      final dir = await getExternalStorageDirectory();
-      if (dir == null) return;
+      final dir = await packStorageDir();
       final entities = await dir.list().toList();
       final files = entities
           .whereType<File>()
@@ -1527,6 +1554,7 @@ class _TheaterScreenState extends State<TheaterScreen> with WidgetsBindingObserv
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               _buildHeader(),
+              if (!Platform.isAndroid) _buildSpotifyRow(),
               const SizedBox(height: 24),
               if (_discovering) ...[
                 const Center(child: CircularProgressIndicator()),
@@ -1539,6 +1567,84 @@ class _TheaterScreenState extends State<TheaterScreen> with WidgetsBindingObserv
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _buildSpotifyRow() {
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: AnimatedBuilder(
+        animation: Listenable.merge([_spotify.connected, _spotify.loggingIn]),
+        builder: (context, _) {
+          final loggingIn = _spotify.loggingIn.value;
+          final connected = _spotify.connected.value == true;
+
+          if (loggingIn) {
+            return Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const SizedBox(
+                  width: 14,
+                  height: 14,
+                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.grey),
+                ),
+                const SizedBox(width: 8),
+                const Text(
+                  'Waiting for approval in browser…',
+                  style: TextStyle(color: Colors.grey, fontSize: 12),
+                ),
+                const SizedBox(width: 8),
+                TextButton(
+                  onPressed: () {
+                    _loginCancelled = true;
+                    _spotify.cancelLogin();
+                  },
+                  style: TextButton.styleFrom(visualDensity: VisualDensity.compact),
+                  child: const Text('Cancel'),
+                ),
+              ],
+            );
+          }
+
+          if (connected) {
+            return Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.check_circle, color: Colors.greenAccent, size: 16),
+                const SizedBox(width: 8),
+                const Text(
+                  'Spotify connected',
+                  style: TextStyle(color: Colors.grey, fontSize: 12),
+                ),
+                const SizedBox(width: 8),
+                TextButton(
+                  onPressed: _loginSpotify,
+                  style: TextButton.styleFrom(visualDensity: VisualDensity.compact),
+                  child: const Text('Reconnect'),
+                ),
+              ],
+            );
+          }
+
+          return Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.music_off, color: Colors.grey, size: 16),
+              const SizedBox(width: 8),
+              const Text(
+                'Spotify not connected',
+                style: TextStyle(color: Colors.grey, fontSize: 12),
+              ),
+              const SizedBox(width: 12),
+              FilledButton.tonal(
+                onPressed: _loginSpotify,
+                style: FilledButton.styleFrom(visualDensity: VisualDensity.compact),
+                child: const Text('Connect Spotify'),
+              ),
+            ],
+          );
+        },
       ),
     );
   }
@@ -1817,10 +1923,8 @@ class _StudioBrowserScreenState extends State<StudioBrowserScreen> with WidgetsB
       await response.forEach((chunk) => chunks.add(chunk));
       client.close();
       final bytes = Uint8List.fromList(chunks.expand((x) => x).toList());
-      final saveDir = await getExternalStorageDirectory();
-      if (saveDir != null) {
-        await File('${saveDir.path}/$filename').writeAsBytes(bytes);
-      }
+      final saveDir = await packStorageDir();
+      await File('${saveDir.path}/$filename').writeAsBytes(bytes);
       if (!mounted) return;
       Navigator.pop(context);
       await extractAndLoadSession(context, bytes, widget.engine);
@@ -1992,11 +2096,12 @@ class SessionPerformanceScreen extends StatefulWidget {
 }
 
 class _SessionPerformanceScreenState extends State<SessionPerformanceScreen> with TickerProviderStateMixin, WidgetsBindingObserver {
+  final SpotifyService _spotify = SpotifyService.create();
   late final SceneRunner _runner;
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      _wifiChannel.invokeMethod('spotifyConnect');
+      _spotify.connect();
       // Re-trigger the current scene animation to wake up the timer/engine
       _runner.setByRef(widget.pack.scenes[_currentIndex].goveeRef);
     }
@@ -2007,6 +2112,8 @@ class _SessionPerformanceScreenState extends State<SessionPerformanceScreen> wit
   double _ambientVol = 50, _triggerVol = 80;
   bool _spotifyPaused = false;
   bool _hasScene = false;
+  int _duckGeneration = 0;
+  bool _isStopped = false;
 
 
 
@@ -2028,7 +2135,9 @@ class _SessionPerformanceScreenState extends State<SessionPerformanceScreen> wit
 
 
   void _duckAmbientFor(AudioPlayer player, int assetDurationMs) {
+    final gen = _duckGeneration;
     _activeDucks++;
+    if (_activeDucks == 1) _spotify.duckStart();
     // Cancel any ramp in flight (a scene fade-in, or another trigger's release).
     // setAmbientVolume alone does not stop _rampAmbient, so without this the
     // ramp's next step would undo the duck ~30 ms later.
@@ -2039,7 +2148,9 @@ class _SessionPerformanceScreenState extends State<SessionPerformanceScreen> wit
     void release() {
       if (released) return;
       released = true;
+      if (gen != _duckGeneration) return;
       _activeDucks--;
+      if (_activeDucks == 0) _spotify.duckEnd();
       if (_activeDucks > 0) return; // another trigger still holding the duck
       if (!mounted) return;
       // Re-read rather than using a value captured at fire time: the scene may
@@ -2086,6 +2197,7 @@ class _SessionPerformanceScreenState extends State<SessionPerformanceScreen> wit
       _currentIndex = index;
       _hasScene = true;
       _ambientVol = scene.ambientVolume.toDouble();
+      _isStopped = false;
     });
     _runner.setByRef(scene.goveeRef);
 
@@ -2093,10 +2205,7 @@ class _SessionPerformanceScreenState extends State<SessionPerformanceScreen> wit
     
     // Spotify (Zero-lag path)
     if (scene.spotify.uri.isNotEmpty) {
-      _wifiChannel.invokeMethod('spotifyPlay', {
-        'uri': scene.spotify.uri,
-        'startTime': scene.spotify.startTime,
-      }).catchError((_) {});
+      _spotify.play(scene.spotify.uri, scene.spotify.startTime);
       setState(() => _spotifyPaused = false);
     }
 
@@ -2178,23 +2287,60 @@ class _SessionPerformanceScreenState extends State<SessionPerformanceScreen> wit
     HapticFeedback.lightImpact();
     // seekToRelativePosition is relative, so repeated presses stack: three
     // presses is +30 s. No local position tracking needed.
-    _wifiChannel
-        .invokeMethod('spotifySeekRelative', _spotifyNudgeMs)
-        .catchError((_) {});
+    _spotify.seekRelative(_spotifyNudgeMs);
   }
 
   void _toggleSpotify() {
     setState(() => _spotifyPaused = !_spotifyPaused);
     if (_spotifyPaused) {
-      _wifiChannel.invokeMethod('spotifyPause', null).catchError((_) {});
+      _spotify.pause();
     } else {
-      _wifiChannel.invokeMethod('spotifyResume', null).catchError((_) {});
+      _spotify.resume();
+    }
+  }
+
+  Future<void> _toggleStopAll() async {
+    HapticFeedback.mediumImpact();
+    if (_isStopped) {
+      final scene = widget.pack.scenes[_currentIndex];
+      setState(() => _isStopped = false);
+      _runner.setByRef(scene.goveeRef);
+      if (scene.ambientId != null) {
+        await _audio.setAmbientVolume(0);
+        await _audio.resumeAmbient();
+        _rampAmbient(0.0, _ambientVol / 100.0);
+      }
+      if (scene.spotify.uri.isNotEmpty) {
+        _spotify.resume();
+        setState(() => _spotifyPaused = false);
+      }
+    } else {
+      setState(() {
+        _isStopped = true;
+        _spotifyPaused = true;
+      });
+      _runner.stop();
+      _currentRampId++;
+      _audio.pauseAmbient();
+      _audio.stopTriggers();
+      for (final c in _activeTriggers.values) {
+        c.dispose();
+      }
+      setState(() {
+        _activeTriggers.clear();
+      });
+      _duckGeneration++;
+      if (_activeDucks > 0) {
+        _activeDucks = 0;
+        await _spotify.duckEnd();
+      }
+      _spotify.pause();
     }
   }
 
   @override
   void dispose() {
-    _wifiChannel.invokeMethod("spotifyPause", null).catchError((_) {});
+    _spotify.pause();
     for (final c in _activeTriggers.values) { c.dispose(); }
     _runner.dispose();
     _audio.dispose();
@@ -2212,18 +2358,34 @@ class _SessionPerformanceScreenState extends State<SessionPerformanceScreen> wit
     final prev = isCircular ? widget.pack.scenes[prevIndex] : null;
     final next = isCircular ? widget.pack.scenes[nextIndex] : null;
 
-    return Scaffold(
-      backgroundColor: Colors.black,
-      body: SafeArea(
-        child: Column(
-          children: [
-            // Scene Nav
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
-              child: Row(
-                children: [
-                  GestureDetector(
-                    onTap: prev != null ? () => _enterScene(prevIndex) : null,
+    return CallbackShortcuts(
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.escape): () => Navigator.maybePop(context),
+        const SingleActivator(LogicalKeyboardKey.space): _toggleStopAll,
+      },
+      child: Focus(
+        autofocus: true,
+        child: Scaffold(
+          backgroundColor: Colors.black,
+          body: SafeArea(
+            child: Column(
+              children: [
+                // Scene Nav
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
+                  child: Row(
+                    children: [
+                      IconButton(
+                        icon: const Icon(Icons.close, size: 20),
+                        color: Colors.white54,
+                        tooltip: 'Back to menu',
+                        onPressed: () => Navigator.maybePop(context),
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(),
+                      ),
+                      const SizedBox(width: 8),
+                      GestureDetector(
+                        onTap: prev != null ? () => _enterScene(prevIndex) : null,
                     child: SizedBox(
                       width: 88,
                       child: Row(children: [
@@ -2249,6 +2411,14 @@ class _SessionPerformanceScreenState extends State<SessionPerformanceScreen> wit
                     ),
                   ),
                 ],
+              ),
+            ),
+            Center(
+              child: IconButton(
+                icon: Icon(_isStopped ? Icons.play_arrow : Icons.stop, size: 32),
+                color: _isStopped ? const Color(0xFF63B8DE) : Colors.white54,
+                tooltip: _isStopped ? 'Resume scene' : 'Stop everything',
+                onPressed: _toggleStopAll,
               ),
             ),
             const Divider(color: Colors.white12),
@@ -2326,7 +2496,7 @@ class _SessionPerformanceScreenState extends State<SessionPerformanceScreen> wit
                   IconButton(
                     icon: const Icon(Icons.skip_next, size: 20),
                     color: Colors.grey,
-                    onPressed: () => _wifiChannel.invokeMethod('spotifySkip'),
+                    onPressed: () => _spotify.skip(),
                     padding: EdgeInsets.zero,
                     constraints: const BoxConstraints(),
                   ),
@@ -2359,6 +2529,8 @@ class _SessionPerformanceScreenState extends State<SessionPerformanceScreen> wit
               ]),
             ),
           ],
+        ),
+      ),
         ),
       ),
     );
