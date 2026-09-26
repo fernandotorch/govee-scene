@@ -174,6 +174,15 @@ class MainActivity : FlutterActivity() {
         return conn
     }
 
+    private fun webApiGet(url: String, token: String): java.net.HttpURLConnection {
+        val conn = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+        conn.requestMethod = "GET"
+        conn.connectTimeout = 10000
+        conn.readTimeout = 10000
+        conn.setRequestProperty("Authorization", "Bearer $token")
+        return conn
+    }
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "com.feru.govee_scene/wifi")
@@ -303,6 +312,36 @@ class MainActivity : FlutterActivity() {
                                 val token = getValidToken() ?: run { runOnUiThread { result.success(null) }; return@Thread }
                                 try { webApiPost("https://api.spotify.com/v1/me/player/next", token).responseCode } catch (_: Exception) {}
                                 runOnUiThread { result.success(null) }
+                            }.start()
+                        }
+                    }
+                    "spotifySeekRelative" -> {
+                        val deltaMs = (call.arguments as? Int) ?: 10000
+                        val remote = spotifyAppRemote
+                        if (remote?.isConnected == true) {
+                            remote.playerApi.seekToRelativePosition(deltaMs.toLong())
+                            result.success(true)
+                        } else {
+                            Thread {
+                                val token = getValidToken() ?: run { runOnUiThread { result.success(false) }; return@Thread }
+                                try {
+                                    // The Web API has no relative seek, so read the
+                                    // current position and add to it.
+                                    val conn = webApiGet("https://api.spotify.com/v1/me/player", token)
+                                    val progress = if (conn.responseCode in 200..299) {
+                                        val body = conn.inputStream.bufferedReader().use { it.readText() }
+                                        org.json.JSONObject(body).optInt("progress_ms", -1)
+                                    } else -1
+                                    if (progress >= 0) {
+                                        val target = (progress + deltaMs).coerceAtLeast(0)
+                                        webApiPut("https://api.spotify.com/v1/me/player/seek?position_ms=$target", token).responseCode
+                                        runOnUiThread { result.success(true) }
+                                    } else {
+                                        runOnUiThread { result.success(false) }
+                                    }
+                                } catch (e: Exception) {
+                                    runOnUiThread { result.success(false) }
+                                }
                             }.start()
                         }
                     }

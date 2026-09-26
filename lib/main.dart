@@ -117,7 +117,10 @@ class AudioEngine {
 
   AudioEngine() {
     _ambientPlayer.setReleaseMode(ReleaseMode.loop);
-    final audioContext = AudioContext(
+
+    // The bed loops forever, so it must never take audio focus — it would hold
+    // the duck open permanently.
+    final ambientContext = AudioContext(
       android: AudioContextAndroid(
         isSpeakerphoneOn: false,
         stayAwake: false,
@@ -126,9 +129,23 @@ class AudioEngine {
         audioFocus: AndroidAudioFocus.none,
       ),
     );
-    _ambientPlayer.setAudioContext(audioContext);
+
+    // Triggers request transient ducking focus. Android tells Spotify to duck
+    // itself (~-14 dB) for as long as we hold focus; audioplayers releases focus
+    // on natural completion (WrappedPlayer.onCompletion -> stop -> handleStop).
+    final triggerContext = AudioContext(
+      android: AudioContextAndroid(
+        isSpeakerphoneOn: false,
+        stayAwake: false,
+        contentType: AndroidContentType.music,
+        usageType: AndroidUsageType.media,
+        audioFocus: AndroidAudioFocus.gainTransientMayDuck,
+      ),
+    );
+
+    _ambientPlayer.setAudioContext(ambientContext);
     for (final p in _triggerPlayers) {
-      p.setAudioContext(audioContext);
+      p.setAudioContext(triggerContext);
     }
   }
 
@@ -1989,20 +2006,64 @@ class _SessionPerformanceScreenState extends State<SessionPerformanceScreen> wit
   int _currentIndex = 0; int _currentRampId = 0;
   double _ambientVol = 50, _triggerVol = 80;
   bool _spotifyPaused = false;
-  bool _isPaused = false;
   bool _hasScene = false;
 
 
 
-  Future<void> _rampAmbient(double from, double to) async {
+  Future<void> _rampAmbient(double from, double to, {int steps = 6, int stepMs = 30}) async {
     final rampId = ++_currentRampId;
-    const steps = 6; const stepMs = 30; // Faster steps
     for (int i = 1; i <= steps; i++) {
       if (rampId != _currentRampId) return;
       final v = from + (to - from) * i / steps;
       _audio.setAmbientVolume(v);
-      if (i < steps) await Future.delayed(const Duration(milliseconds: stepMs));
+      if (i < steps) await Future.delayed(Duration(milliseconds: stepMs));
     }
+  }
+
+  // How far the bed drops while a trigger is playing. 0.35 = -9 dB.
+  static const double _ambientDuckFactor = 0.35;
+
+  // Number of triggers currently holding the duck open.
+  int _activeDucks = 0;
+
+
+  void _duckAmbientFor(AudioPlayer player, int assetDurationMs) {
+    _activeDucks++;
+    // Cancel any ramp in flight (a scene fade-in, or another trigger's release).
+    // setAmbientVolume alone does not stop _rampAmbient, so without this the
+    // ramp's next step would undo the duck ~30 ms later.
+    _currentRampId++;
+    _audio.setAmbientVolume((_ambientVol / 100.0) * _ambientDuckFactor);
+
+    var released = false;
+    void release() {
+      if (released) return;
+      released = true;
+      _activeDucks--;
+      if (_activeDucks > 0) return; // another trigger still holding the duck
+      if (!mounted) return;
+      // Re-read rather than using a value captured at fire time: the scene may
+      // have changed under us, or the slider may have moved. Either way the bed
+      // belongs at whatever level is current now.
+      // If the scene we landed in has no bed of its own, the ambient player is
+      // still looping the *previous* scene's bed at zero — lifting the duck
+      // would bring it back. Leave it silent.
+      final scene = widget.pack.scenes[_currentIndex];
+      if (scene.ambientId == null) {
+        _audio.setAmbientVolume(0);
+        return;
+      }
+      final current = _ambientVol / 100.0;
+      _rampAmbient(current * _ambientDuckFactor, current, steps: 12, stepMs: 35);
+    }
+
+    player.onPlayerComplete.first.then((_) => release());
+
+    // Safety net: the 6 trigger players are recycled in a ring, and
+    // AudioEngine.playTrigger calls stop() on reuse. stop() does NOT emit
+    // onPlayerComplete, so without this the duck would never lift.
+    final fallbackMs = (assetDurationMs > 0 ? assetDurationMs : 5000) + 750;
+    Future.delayed(Duration(milliseconds: fallbackMs), release);
   }
   final Map<int, AnimationController> _activeTriggers = {};
 
@@ -2016,7 +2077,8 @@ class _SessionPerformanceScreenState extends State<SessionPerformanceScreen> wit
   }
 
     void _enterScene(int index) {
-    _isPaused = false;
+    // _activeDucks deliberately survives the scene change: a trigger that is
+    // still playing must keep the new scene's bed ducked until it finishes.
     final scene = widget.pack.scenes[index];
 
     // 1. Instant UI and Light Update
@@ -2050,9 +2112,16 @@ class _SessionPerformanceScreenState extends State<SessionPerformanceScreen> wit
       if (asset != null) {
         final path = '${widget.pack.directoryPath}/${asset.file}';
         await _audio.playAmbient(path, 0.0);
-        _rampAmbient(0.0, scene.ambientVolume / 100.0);
+        // If a trigger from the outgoing scene is still ringing out, fade in to
+        // the ducked level; its release will lift the bed the rest of the way.
+        final full = scene.ambientVolume / 100.0;
+        final ceiling = _activeDucks > 0 ? full * _ambientDuckFactor : full;
+        _rampAmbient(0.0, ceiling);
       }
     } else {
+      // Cancel any fade still stepping, or it will keep raising the volume of
+      // the outgoing scene's bed after the cut.
+      _currentRampId++;
       _audio.setAmbientVolume(0);
     }
   }
@@ -2084,6 +2153,7 @@ class _SessionPerformanceScreenState extends State<SessionPerformanceScreen> wit
       setState(() => _activeTriggers[index] = ctrl);
 
       final player = await _audio.playTrigger(path);
+      _duckAmbientFor(player, asset.durationMs);
 
       Future.any([
         player.onDurationChanged.first,
@@ -2102,17 +2172,15 @@ class _SessionPerformanceScreenState extends State<SessionPerformanceScreen> wit
     }
   }
 
-  void _togglePause() {
-    setState(() => _isPaused = !_isPaused);
-    if (_isPaused) {
-      _runner.stop();
-      _audio.pauseAmbient();
-      _wifiChannel.invokeMethod('spotifyPause', null).catchError((_) {});
-    } else {
-      _runner.setByRef(widget.pack.scenes[_currentIndex].goveeRef);
-      _audio.resumeAmbient();
-      _wifiChannel.invokeMethod('spotifyResume', null).catchError((_) {});
-    }
+  static const int _spotifyNudgeMs = 10000;
+
+  void _skipForward() {
+    HapticFeedback.lightImpact();
+    // seekToRelativePosition is relative, so repeated presses stack: three
+    // presses is +30 s. No local position tracking needed.
+    _wifiChannel
+        .invokeMethod('spotifySeekRelative', _spotifyNudgeMs)
+        .catchError((_) {});
   }
 
   void _toggleSpotify() {
@@ -2183,14 +2251,6 @@ class _SessionPerformanceScreenState extends State<SessionPerformanceScreen> wit
                 ],
               ),
             ),
-            Center(
-              child: IconButton(
-                icon: Icon(_isPaused ? Icons.play_arrow : Icons.pause, size: 32),
-                color: _isPaused ? const Color(0xFF63B8DE) : Colors.white54,
-                tooltip: _isPaused ? 'Resume' : 'Pause',
-                onPressed: _togglePause,
-              ),
-            ),
             const Divider(color: Colors.white12),
             // Trigger Grid
             Expanded(
@@ -2254,6 +2314,15 @@ class _SessionPerformanceScreenState extends State<SessionPerformanceScreen> wit
                     padding: EdgeInsets.zero,
                     constraints: const BoxConstraints(),
                   ),
+                  const SizedBox(width: 12),
+                  IconButton(
+                    icon: const Icon(Icons.forward_10, size: 20),
+                    color: Colors.grey,
+                    onPressed: _skipForward,
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
+                  ),
+                  const SizedBox(width: 12),
                   IconButton(
                     icon: const Icon(Icons.skip_next, size: 20),
                     color: Colors.grey,
