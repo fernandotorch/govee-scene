@@ -2289,6 +2289,9 @@ class _SessionOverviewScreenState extends State<SessionOverviewScreen> {
                   controller: controller,
                   renderer: renderer,
                   host: _host,
+                  hostName: _host != null && !_hostBindFailed
+                      ? _host!.hostName
+                      : SyncHost.defaultHostName(),
                 ),
               ));
             },
@@ -2481,10 +2484,14 @@ class _SessionPerformanceScreenState extends State<SessionPerformanceScreen>
                       ),
                       Expanded(child: Column(children: [
                         Text(scene.name.toUpperCase(), style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, letterSpacing: 2), textAlign: TextAlign.center),
-                        if (widget.isRemote && widget.hostName != null)
-                          Text('Remote · ${widget.hostName}', style: const TextStyle(fontSize: 10, color: Colors.grey))
-                        else
-                          Text(scene.goveeRef, style: const TextStyle(fontSize: 10, color: Color(0xFF63B8DE))),
+                        Text(scene.goveeRef, style: const TextStyle(fontSize: 10, color: Color(0xFF63B8DE))),
+                        if (widget.hostName != null && widget.hostName!.isNotEmpty)
+                          Text(
+                            widget.isRemote
+                                ? 'Remote · ${widget.hostName}'
+                                : 'Host · ${widget.hostName}',
+                            style: const TextStyle(fontSize: 10, color: Colors.grey),
+                          ),
                       ])),
                       GestureDetector(
                         onTap: next != null ? () => _controller.enterScene(nextIndex) : null,

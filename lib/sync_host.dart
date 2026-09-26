@@ -27,6 +27,7 @@ class _ConnectedClient {
 class SyncHost {
   final LoadedPack loaded;
   final String hostName;
+  final int port;
 
   HttpServer? _httpServer;
   RawDatagramSocket? _udpSocket;
@@ -40,9 +41,11 @@ class SyncHost {
   Timer? _coalesceTimer;
   bool _hasPendingSnapshot = false;
 
-  SyncHost(this.loaded, this.hostName) {
+  SyncHost(this.loaded, this.hostName, {this.port = kSyncPort}) {
     devicesNotifier.value = _buildDeviceList();
   }
+
+  int get actualPort => _httpServer?.port ?? port;
 
   static String defaultHostName() {
     final h = Platform.localHostname.trim();
@@ -90,7 +93,7 @@ class SyncHost {
 
       _httpServer = await HttpServer.bind(
         InternetAddress.anyIPv4,
-        kSyncPort,
+        port,
         shared: false,
       );
 
@@ -108,7 +111,7 @@ class SyncHost {
             if (text == kDiscoveryProbe) {
               final reply = utf8.encode(SyncProtocol.discoveryReply(
                 name: hostName,
-                port: kSyncPort,
+                port: actualPort,
                 protocol: kProtocolVersion,
                 pack: loaded.pack.name,
               ));

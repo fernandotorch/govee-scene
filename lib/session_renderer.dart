@@ -28,9 +28,9 @@ class SessionRenderer {
     switch (event) {
       case SceneEntered(:final index):
         _onSceneEntered(index);
-      case TriggerFired(:final sceneIndex, :final index):
+      case TriggerFired(:final sceneIndex, :final index, :final playId):
         if (sceneIndex == controller.sceneIndex) {
-          _onTriggerFired(index);
+          _onTriggerFired(index, playId: playId);
         }
       case StoppedAll():
         _onStoppedAll();
@@ -147,7 +147,7 @@ class SessionRenderer {
     }
   }
 
-  void _onTriggerFired(int index) async {
+  void _onTriggerFired(int index, {int playId = -1}) async {
     if (index < 0 || index >= controller.scene.triggers.length) return;
     final t = controller.scene.triggers[index];
 
@@ -174,6 +174,17 @@ class SessionRenderer {
 
     try {
       final player = await audio.playTrigger(path);
+      player.onDurationChanged
+          .first
+          .timeout(const Duration(seconds: 2))
+          .then((d) {
+        if (d > Duration.zero) {
+          controller.updateTriggerDuration(playId, d);
+        }
+      }).catchError((_) {});
+      player.onPlayerComplete.first
+          .then((_) => controller.endTrigger(playId))
+          .catchError((_) {});
       _duckAmbientFor(player, asset.durationMs);
     } catch (e) {
       debugPrint('Playback error: $e');

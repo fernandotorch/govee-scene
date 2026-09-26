@@ -67,7 +67,7 @@ void main() {
     final loadedPack = LoadedPack(pack: pack, zipBytes: zipBytes);
 
     // 1. Start SyncHost with in-memory test pack
-    final host = SyncHost(loadedPack, 'TestHost');
+    final host = SyncHost(loadedPack, 'TestHost', port: 0);
     final started = await host.start();
     expect(started, isTrue, reason: 'SyncHost must bind and start successfully');
 
@@ -85,7 +85,7 @@ void main() {
       });
 
       // 2. Connect client to 127.0.0.1
-      await client.connect(InternetAddress.loopbackIPv4, port: kSyncPort);
+      await client.connect(InternetAddress.loopbackIPv4, port: host.actualPort);
 
       // 3. Check welcome arrives with correct pack ID
       final welcome = await welcomeCompleter.future.timeout(
@@ -205,5 +205,113 @@ void main() {
 
     remote.dispose();
     await dummyClient.close();
+  });
+
+  test('SessionController real trigger timing, duration update, and endTrigger', () async {
+    const sessionJson = '''
+{
+  "name": "Trigger Timing Test Pack",
+  "scenes": [
+    {
+      "id": "scene_0",
+      "name": "Scene Zero",
+      "govee_effect": {"ref": "effect_0"},
+      "ambient": null,
+      "ambient_volume": 50,
+      "spotify": {"uri": "", "volume": 50, "start_time": 0},
+      "triggers": [
+        {
+          "id": "trig_0",
+          "name": "Trigger Zero",
+          "sound": "sound_0",
+          "govee_flash": null
+        },
+        {
+          "id": "trig_flash",
+          "name": "Flash Only",
+          "sound": "",
+          "govee_flash": {"ref": "flash_0"}
+        }
+      ]
+    }
+  ],
+  "audio_manifest": {
+    "sound_0": {
+      "file": "sound_0.mp3",
+      "duration_ms": 5000
+    }
+  }
+}
+''';
+    final packJson = jsonDecode(sessionJson) as Map<String, dynamic>;
+    final pack = SessionPack.fromJson(packJson, '/dummy/path');
+    final controller = SessionController(pack);
+
+    final events = <SessionEvent>[];
+    controller.events.listen(events.add);
+
+    // Flash-only trigger emits playId = -1
+    controller.fireTrigger(1);
+    await pumpEventQueue();
+    expect(events.last, isA<TriggerFired>());
+    final flashEvent = events.last as TriggerFired;
+    expect(flashEvent.playId, equals(-1));
+    expect(flashEvent.toJson()['playId'], equals(-1));
+    expect(TriggerFired.fromJson(flashEvent.toJson()).playId, equals(-1));
+
+    // 1. Fire a trigger whose manifest duration is 5000 ms, then call updateTriggerDuration(playId, 800ms).
+    // It must be gone after about 900 ms.
+    controller.fireTrigger(0);
+    await pumpEventQueue();
+    expect(controller.activeTriggers.containsKey(0), isTrue);
+    final active = controller.activeTriggers[0]!;
+    expect(active.duration, equals(const Duration(milliseconds: 5000)));
+    final playId1 = active.playId;
+    expect(playId1, isPositive);
+    expect(events.last, isA<TriggerFired>());
+    expect((events.last as TriggerFired).playId, equals(playId1));
+
+    controller.updateTriggerDuration(playId1, const Duration(milliseconds: 800));
+    expect(controller.activeTriggers.containsKey(0), isTrue);
+    expect(controller.activeTriggers[0]!.duration, equals(const Duration(milliseconds: 800)));
+
+    // Still present after 400ms
+    await Future.delayed(const Duration(milliseconds: 400));
+    expect(controller.activeTriggers.containsKey(0), isTrue);
+
+    // Gone after about 900ms total
+    await Future.delayed(const Duration(milliseconds: 550));
+    expect(controller.activeTriggers.containsKey(0), isFalse);
+
+    // 2. Fire again and call endTrigger(playId). It must be gone immediately.
+    controller.fireTrigger(0);
+    expect(controller.activeTriggers.containsKey(0), isTrue);
+    final playId2 = controller.activeTriggers[0]!.playId;
+    expect(playId2, isNot(equals(playId1)));
+
+    controller.endTrigger(playId2);
+    expect(controller.activeTriggers.containsKey(0), isFalse);
+
+    // 3. Calling endTrigger with an old playId after the same index has been re-fired
+    // must NOT remove the new one.
+    controller.fireTrigger(0);
+    expect(controller.activeTriggers.containsKey(0), isTrue);
+    final oldPlayId = controller.activeTriggers[0]!.playId;
+
+    controller.fireTrigger(0);
+    expect(controller.activeTriggers.containsKey(0), isTrue);
+    final newPlayId = controller.activeTriggers[0]!.playId;
+    expect(newPlayId, isNot(equals(oldPlayId)));
+
+    // Calling endTrigger with oldPlayId must NOT remove the new one
+    controller.endTrigger(oldPlayId);
+    expect(controller.activeTriggers.containsKey(0), isTrue);
+    expect(controller.activeTriggers[0]!.playId, equals(newPlayId));
+
+    // Calling endTrigger with newPlayId removes it
+    controller.endTrigger(newPlayId);
+    expect(controller.activeTriggers.containsKey(0), isFalse);
+
+    controller.dispose();
   });
 }

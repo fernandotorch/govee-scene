@@ -55,19 +55,26 @@ class SceneEntered extends SessionEvent {
 class TriggerFired extends SessionEvent {
   final int sceneIndex;
   final int index;
-  const TriggerFired({required this.sceneIndex, required this.index});
+  final int playId;
+  const TriggerFired({
+    required this.sceneIndex,
+    required this.index,
+    this.playId = -1,
+  });
 
   @override
   Map<String, dynamic> toJson() => {
     'type': 'trigger_fired',
     'sceneIndex': sceneIndex,
     'index': index,
+    'playId': playId,
   };
 
   factory TriggerFired.fromJson(Map<String, dynamic> json) =>
       TriggerFired(
         sceneIndex: json['sceneIndex'] as int? ?? 0,
         index: json['index'] as int,
+        playId: json['playId'] as int? ?? -1,
       );
 }
 
@@ -165,10 +172,12 @@ class TriggerVolumeChanged extends SessionEvent {
 class ActiveTrigger {
   final DateTime startedAt;
   final Duration duration;
+  final int playId;
 
   const ActiveTrigger({
     required this.startedAt,
     required this.duration,
+    this.playId = -1,
   });
 }
 
@@ -213,6 +222,7 @@ class SessionController extends SessionControl {
   final Map<int, ActiveTrigger> activeTriggers = {};
   final Map<int, Timer> _triggerTimers = {};
   final StreamController<SessionEvent> _events = StreamController<SessionEvent>.broadcast();
+  int _nextPlayId = 1;
 
   SessionController(this.pack);
 
@@ -239,7 +249,7 @@ class SessionController extends SessionControl {
     if (t.soundId.isEmpty) {
       if (t.flashRef != null) {
         notifyListeners();
-        _events.add(TriggerFired(sceneIndex: sceneIndex, index: index));
+        _events.add(TriggerFired(sceneIndex: sceneIndex, index: index, playId: -1));
         return null;
       } else {
         return 'No sound or light assigned to this trigger';
@@ -250,6 +260,7 @@ class SessionController extends SessionControl {
       return 'Sound not found: ${t.soundId}';
     }
 
+    final playId = _nextPlayId++;
     final durationMs = asset.durationMs > 0 ? asset.durationMs : 5000;
     final duration = Duration(milliseconds: durationMs);
 
@@ -257,6 +268,7 @@ class SessionController extends SessionControl {
     activeTriggers[index] = ActiveTrigger(
       startedAt: DateTime.now(),
       duration: duration,
+      playId: playId,
     );
     _triggerTimers[index] = Timer(duration, () {
       _triggerTimers.remove(index);
@@ -265,8 +277,57 @@ class SessionController extends SessionControl {
     });
 
     notifyListeners();
-    _events.add(TriggerFired(sceneIndex: sceneIndex, index: index));
+    _events.add(TriggerFired(sceneIndex: sceneIndex, index: index, playId: playId));
     return null;
+  }
+
+  void updateTriggerDuration(int playId, Duration real) {
+    if (playId < 0) return;
+    int? targetIndex;
+    ActiveTrigger? targetTrigger;
+    for (final entry in activeTriggers.entries) {
+      if (entry.value.playId == playId) {
+        targetIndex = entry.key;
+        targetTrigger = entry.value;
+        break;
+      }
+    }
+    if (targetIndex == null || targetTrigger == null) return;
+
+    _triggerTimers[targetIndex]?.cancel();
+    final remaining = targetTrigger.startedAt.add(real).difference(DateTime.now());
+    if (remaining <= Duration.zero) {
+      _triggerTimers.remove(targetIndex);
+      activeTriggers.remove(targetIndex);
+    } else {
+      activeTriggers[targetIndex] = ActiveTrigger(
+        startedAt: targetTrigger.startedAt,
+        duration: real,
+        playId: playId,
+      );
+      _triggerTimers[targetIndex] = Timer(remaining, () {
+        _triggerTimers.remove(targetIndex);
+        activeTriggers.remove(targetIndex);
+        notifyListeners();
+      });
+    }
+    notifyListeners();
+  }
+
+  void endTrigger(int playId) {
+    if (playId < 0) return;
+    int? targetIndex;
+    for (final entry in activeTriggers.entries) {
+      if (entry.value.playId == playId) {
+        targetIndex = entry.key;
+        break;
+      }
+    }
+    if (targetIndex == null) return;
+
+    _triggerTimers.remove(targetIndex)?.cancel();
+    activeTriggers.remove(targetIndex);
+    notifyListeners();
   }
 
   @override

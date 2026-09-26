@@ -158,7 +158,12 @@ class DesktopSpotifyService implements SpotifyService {
     }
   }
 
-  int? _preDuckVolume;
+  bool _wantDucked = false;
+  bool _isDucked = false;
+  int? _normalVolume;
+  int? _lastDuckedValue;
+  DateTime _lastVolumeWrite = DateTime.fromMillisecondsSinceEpoch(0);
+  Future<void> _duckChain = Future.value();
 
   bool _checkClientId() {
     if (_clientId.isEmpty) {
@@ -672,47 +677,78 @@ class DesktopSpotifyService implements SpotifyService {
   }
 
   @override
-  Future<void> duckStart() async {
-    if (!_checkClientId()) return;
-    final token = await _validToken();
-    if (token == null) {
-      _preDuckVolume = null;
-      return;
-    }
-    final res = await _sendRequest('GET', 'https://api.spotify.com/v1/me/player', token);
-    if (res != null && res.statusCode >= 200 && res.statusCode < 300) {
-      try {
-        final json = jsonDecode(res.body) as Map<String, dynamic>;
-        final device = json['device'] as Map<String, dynamic>?;
-        final vol = device?['volume_percent'] as int?;
-        if (vol != null) {
-          _preDuckVolume = vol;
-          final ducked = (_preDuckVolume! * _spotifyDuckFactor).round().clamp(0, 100);
-          await _sendRequest(
-            'PUT',
-            'https://api.spotify.com/v1/me/player/volume?volume_percent=$ducked',
-            token,
-          );
-          return;
-        }
-      } catch (_) {}
-    }
-    _preDuckVolume = null;
+  Future<void> duckStart() {
+    _wantDucked = true;
+    return _enqueue();
   }
 
   @override
-  Future<void> duckEnd() async {
+  Future<void> duckEnd() {
+    _wantDucked = false;
+    return _enqueue();
+  }
+
+  Future<void> _enqueue() {
+    _duckChain = _duckChain.then((_) => _applyDuck()).catchError((_) {});
+    return _duckChain;
+  }
+
+  Future<void> _applyDuck() async {
     if (!_checkClientId()) return;
-    final vol = _preDuckVolume;
-    _preDuckVolume = null;
-    if (vol != null) {
+    if (_wantDucked && !_isDucked) {
+      final v = await _readNormalVolume();
+      if (v == null) return;
+      _normalVolume = v;
+      final ducked = (v * _spotifyDuckFactor).round().clamp(0, 100);
       final token = await _validToken();
       if (token == null) return;
       await _sendRequest(
         'PUT',
-        'https://api.spotify.com/v1/me/player/volume?volume_percent=$vol',
+        'https://api.spotify.com/v1/me/player/volume?volume_percent=$ducked',
         token,
       );
+      _lastDuckedValue = ducked;
+      _isDucked = true;
+      _lastVolumeWrite = DateTime.now();
+      debugPrint('SpotifyService: duck -> $ducked%');
+    } else if (!_wantDucked && _isDucked) {
+      if (_normalVolume != null) {
+        final token = await _validToken();
+        if (token != null) {
+          await _sendRequest(
+            'PUT',
+            'https://api.spotify.com/v1/me/player/volume?volume_percent=$_normalVolume',
+            token,
+          );
+        }
+      }
+      _isDucked = false;
+      _lastVolumeWrite = DateTime.now();
+      debugPrint('SpotifyService: unduck -> $_normalVolume%');
     }
+  }
+
+  Future<int?> _readNormalVolume() async {
+    if (_normalVolume != null &&
+        DateTime.now().difference(_lastVolumeWrite) < const Duration(seconds: 15)) {
+      return _normalVolume;
+    }
+    try {
+      final token = await _validToken();
+      if (token == null) return null;
+      final res = await _sendRequest('GET', 'https://api.spotify.com/v1/me/player', token);
+      if (res != null && res.statusCode >= 200 && res.statusCode < 300) {
+        final json = jsonDecode(res.body) as Map<String, dynamic>;
+        final device = json['device'] as Map<String, dynamic>?;
+        final vol = device?['volume_percent'] as int?;
+        if (vol != null) {
+          if (vol == _lastDuckedValue && _normalVolume != null) {
+            return _normalVolume;
+          }
+          return vol;
+        }
+      }
+    } catch (_) {}
+    return null;
   }
 }
