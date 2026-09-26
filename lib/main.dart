@@ -2217,7 +2217,15 @@ class _SessionOverviewScreenState extends State<SessionOverviewScreen> {
   Future<void> _startHost() async {
     final host = SyncHost(widget.loaded, SyncHost.defaultHostName());
     _host = host;
-    final ok = await host.start();
+    bool ok = false;
+    try {
+      ok = await host.start();
+    } catch (_) {}
+    if (Platform.isAndroid) {
+      try {
+        await _wifiChannel.invokeMethod('startSessionService', {'title': widget.pack.name});
+      } catch (_) {}
+    }
     if (!mounted) return;
     setState(() {
       _hostBindFailed = !ok;
@@ -2227,6 +2235,11 @@ class _SessionOverviewScreenState extends State<SessionOverviewScreen> {
   @override
   void dispose() {
     _host?.stop();
+    if (Platform.isAndroid) {
+      try {
+        _wifiChannel.invokeMethod('stopSessionService').catchError((_) => null);
+      } catch (_) {}
+    }
     super.dispose();
   }
 

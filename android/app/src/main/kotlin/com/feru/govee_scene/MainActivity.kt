@@ -23,6 +23,11 @@ import org.json.JSONObject
 import com.spotify.android.appremote.api.ConnectionParams
 import com.spotify.android.appremote.api.Connector
 import com.spotify.android.appremote.api.SpotifyAppRemote
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 
 
 class MainActivity : FlutterActivity() {
@@ -343,6 +348,37 @@ class MainActivity : FlutterActivity() {
                                     runOnUiThread { result.success(false) }
                                 }
                             }.start()
+                        }
+                    }
+                    "startSessionService" -> {
+                        try {
+                            val title = if (call.arguments is Map<*, *>) {
+                                call.argument<String>("title") ?: ""
+                            } else {
+                                call.arguments as? String ?: ""
+                            }
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                val perm = Manifest.permission.POST_NOTIFICATIONS
+                                if (ContextCompat.checkSelfPermission(this, perm) != PackageManager.PERMISSION_GRANTED) {
+                                    val asked = prefs.getBoolean("post_notifications_requested", false)
+                                    if (!asked) {
+                                        prefs.edit().putBoolean("post_notifications_requested", true).apply()
+                                        ActivityCompat.requestPermissions(this, arrayOf(perm), 1001)
+                                    }
+                                }
+                            }
+                            SessionService.start(this, title)
+                            result.success(null)
+                        } catch (e: Exception) {
+                            result.error("SESSION_SERVICE_ERROR", e.message, null)
+                        }
+                    }
+                    "stopSessionService" -> {
+                        try {
+                            SessionService.stop(this)
+                            result.success(null)
+                        } catch (e: Exception) {
+                            result.error("SESSION_SERVICE_ERROR", e.message, null)
                         }
                     }
                     else -> result.notImplemented()
