@@ -1,3 +1,19 @@
+import 'dart:typed_data';
+
+import 'package:crypto/crypto.dart';
+
+class LoadedPack {
+  final SessionPack pack;
+  final Uint8List zipBytes;
+  final String id;
+
+  LoadedPack({
+    required this.pack,
+    required this.zipBytes,
+    String? id,
+  }) : id = id ?? sha256.convert(zipBytes).toString();
+}
+
 class SessionPack {
   final String name;
   final List<SessionScene> scenes;

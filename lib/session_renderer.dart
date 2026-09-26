@@ -28,8 +28,10 @@ class SessionRenderer {
     switch (event) {
       case SceneEntered(:final index):
         _onSceneEntered(index);
-      case TriggerFired(:final index):
-        _onTriggerFired(index);
+      case TriggerFired(:final sceneIndex, :final index):
+        if (sceneIndex == controller.sceneIndex) {
+          _onTriggerFired(index);
+        }
       case StoppedAll():
         _onStoppedAll();
       case ResumedAll():

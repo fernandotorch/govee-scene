@@ -53,17 +53,22 @@ class SceneEntered extends SessionEvent {
 }
 
 class TriggerFired extends SessionEvent {
+  final int sceneIndex;
   final int index;
-  const TriggerFired(this.index);
+  const TriggerFired({required this.sceneIndex, required this.index});
 
   @override
   Map<String, dynamic> toJson() => {
     'type': 'trigger_fired',
+    'sceneIndex': sceneIndex,
     'index': index,
   };
 
   factory TriggerFired.fromJson(Map<String, dynamic> json) =>
-      TriggerFired(json['index'] as int);
+      TriggerFired(
+        sceneIndex: json['sceneIndex'] as int? ?? 0,
+        index: json['index'] as int,
+      );
 }
 
 class StoppedAll extends SessionEvent {
@@ -167,26 +172,55 @@ class ActiveTrigger {
   });
 }
 
+abstract class SessionControl extends ChangeNotifier {
+  SessionPack get pack;
+  SessionScene get scene;
+  int get sceneIndex;
+  bool get isStopped;
+  bool get spotifyPaused;
+  double get ambientVolume;
+  double get triggerVolume;
+  Map<int, ActiveTrigger> get activeTriggers;
+
+  void enterScene(int index);
+  String? fireTrigger(int index);
+  void toggleStopAll();
+  void toggleSpotifyPause();
+  void seekSpotify(int deltaMs);
+  void skipSpotify();
+  void setAmbientVolume(double percent);
+  void setTriggerVolume(double percent);
+}
+
 // ── Session Controller ───────────────────────────────────────────────────────
 
-class SessionController extends ChangeNotifier {
+class SessionController extends SessionControl {
+  @override
   final SessionPack pack;
 
+  @override
   int sceneIndex = 0;
+  @override
   bool isStopped = false;
+  @override
   bool spotifyPaused = false;
+  @override
   double ambientVolume = 50.0;
+  @override
   double triggerVolume = 80.0;
 
+  @override
   final Map<int, ActiveTrigger> activeTriggers = {};
   final Map<int, Timer> _triggerTimers = {};
   final StreamController<SessionEvent> _events = StreamController<SessionEvent>.broadcast();
 
   SessionController(this.pack);
 
+  @override
   SessionScene get scene => pack.scenes[sceneIndex];
   Stream<SessionEvent> get events => _events.stream;
 
+  @override
   void enterScene(int index) {
     sceneIndex = index;
     ambientVolume = scene.ambientVolume.toDouble();
@@ -198,13 +232,14 @@ class SessionController extends ChangeNotifier {
     _events.add(SceneEntered(index));
   }
 
+  @override
   String? fireTrigger(int index) {
     if (index < 0 || index >= scene.triggers.length) return null;
     final t = scene.triggers[index];
     if (t.soundId.isEmpty) {
       if (t.flashRef != null) {
         notifyListeners();
-        _events.add(TriggerFired(index));
+        _events.add(TriggerFired(sceneIndex: sceneIndex, index: index));
         return null;
       } else {
         return 'No sound or light assigned to this trigger';
@@ -230,10 +265,11 @@ class SessionController extends ChangeNotifier {
     });
 
     notifyListeners();
-    _events.add(TriggerFired(index));
+    _events.add(TriggerFired(sceneIndex: sceneIndex, index: index));
     return null;
   }
 
+  @override
   void toggleStopAll() {
     isStopped = !isStopped;
     if (isStopped) {
@@ -254,32 +290,56 @@ class SessionController extends ChangeNotifier {
     }
   }
 
+  @override
   void toggleSpotifyPause() {
     spotifyPaused = !spotifyPaused;
     notifyListeners();
     _events.add(SpotifyPauseToggled(spotifyPaused));
   }
 
+  @override
   void seekSpotify(int deltaMs) {
     notifyListeners();
     _events.add(SpotifySeekRelative(deltaMs));
   }
 
+  @override
   void skipSpotify() {
     notifyListeners();
     _events.add(const SpotifySkipped());
   }
 
+  @override
   void setAmbientVolume(double percent) {
     ambientVolume = percent;
     notifyListeners();
     _events.add(AmbientVolumeChanged(percent));
   }
 
+  @override
   void setTriggerVolume(double percent) {
     triggerVolume = percent;
     notifyListeners();
     _events.add(TriggerVolumeChanged(percent));
+  }
+
+  Map<String, dynamic> toSnapshot() {
+    final now = DateTime.now();
+    return {
+      'sceneIndex': sceneIndex,
+      'isStopped': isStopped,
+      'spotifyPaused': spotifyPaused,
+      'ambientVolume': ambientVolume.round(),
+      'triggerVolume': triggerVolume.round(),
+      'activeTriggers': activeTriggers.entries.map((e) {
+        final elapsed = now.difference(e.value.startedAt).inMilliseconds;
+        return {
+          'index': e.key,
+          'elapsedMs': elapsed < 0 ? 0 : elapsed,
+          'durationMs': e.value.duration.inMilliseconds,
+        };
+      }).toList(),
+    };
   }
 
   @override

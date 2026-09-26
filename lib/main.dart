@@ -10,10 +10,18 @@ import 'package:audioplayers/audioplayers.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:archive/archive.dart';
 
+import 'package:crypto/crypto.dart';
+
+import 'client_lobby_screen.dart';
 import 'spotify_service.dart';
 import 'session_controller.dart';
 import 'session_model.dart';
 import 'session_renderer.dart';
+import 'sync_client.dart';
+import 'sync_host.dart';
+import 'sync_protocol.dart';
+
+final RouteObserver<ModalRoute<void>> routeObserver = RouteObserver<ModalRoute<void>>();
 
 Future<Directory> packStorageDir() async {
   if (Platform.isAndroid) return (await getExternalStorageDirectory())!;
@@ -303,7 +311,11 @@ class GoveeEngine extends ChangeNotifier {
     return base64Encode(pkt);
   }
 
-  void dispose() => _socket?.close();
+  @override
+  void dispose() {
+    _socket?.close();
+    super.dispose();
+  }
 }
 
 // ── Scene runner ──────────────────────────────────────────────────────────────
@@ -1269,11 +1281,9 @@ class SceneRunner {
   void dispose() => stop();
 }
 
-Future<void> extractAndLoadSession(BuildContext context, Uint8List zipBytes, GoveeEngine engine) async {
+Future<LoadedPack?> extractPack(Uint8List zipBytes) async {
   final dir = await packStorageDir();
   final sessionDir = Directory('${dir.path}/session');
-  if (!context.mounted) return;
-  ScaffoldMessenger.of(context).showSnackBar(ApiResponseSnackBar(message: 'Extracting session pack…'));
   if (await sessionDir.exists()) await sessionDir.delete(recursive: true);
   await sessionDir.create(recursive: true);
   final archive = ZipDecoder().decodeBytes(zipBytes);
@@ -1288,12 +1298,44 @@ Future<void> extractAndLoadSession(BuildContext context, Uint8List zipBytes, Gov
   if (await configFile.exists()) {
     final content = await configFile.readAsString();
     final pack = SessionPack.fromJson(jsonDecode(content), sessionDir.path);
-    if (!context.mounted) return;
+    return LoadedPack(pack: pack, zipBytes: zipBytes);
+  }
+  return null;
+}
+
+Future<Uint8List?> findStoredPackBytesBySha256(String targetSha256) async {
+  try {
+    final dir = await packStorageDir();
+    final entities = await dir.list().toList();
+    final files = entities.whereType<File>().where((f) => f.path.endsWith('.zip'));
+    for (final file in files) {
+      final bytes = await file.readAsBytes();
+      final hash = sha256.convert(bytes).toString();
+      if (hash == targetSha256) {
+        return bytes;
+      }
+    }
+  } catch (e) {
+    debugPrint('findStoredPackBytesBySha256 error: $e');
+  }
+  return null;
+}
+
+String sanitizePackFilename(String packName) {
+  final clean = packName.replaceAll(RegExp(r'[^\w\s\-]'), '_').trim();
+  return clean.isEmpty ? 'session_pack' : clean;
+}
+
+Future<void> extractAndLoadSession(BuildContext context, Uint8List zipBytes, GoveeEngine engine) async {
+  if (!context.mounted) return;
+  ScaffoldMessenger.of(context).showSnackBar(ApiResponseSnackBar(message: 'Extracting session pack…'));
+  final loaded = await extractPack(zipBytes);
+  if (!context.mounted) return;
+  if (loaded != null) {
     Navigator.push(context, MaterialPageRoute(
-      builder: (_) => SessionOverviewScreen(pack: pack, engine: engine),
+      builder: (_) => SessionOverviewScreen(loaded: loaded, engine: engine),
     ));
   } else {
-    if (!context.mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(ApiResponseSnackBar(message: 'Invalid pack: no session.json'));
   }
 }
@@ -1308,6 +1350,7 @@ class GoveeApp extends StatelessWidget {
       title: 'Govee Light Theater',
       debugShowCheckedModeBanner: false,
       theme: ThemeData.dark().copyWith(scaffoldBackgroundColor: const Color(0xFF0E0E0E)),
+      navigatorObservers: [routeObserver],
       home: const TheaterScreen(),
     );
   }
@@ -1319,7 +1362,8 @@ class TheaterScreen extends StatefulWidget {
   State<TheaterScreen> createState() => _TheaterScreenState();
 }
 
-class _TheaterScreenState extends State<TheaterScreen> with WidgetsBindingObserver {
+class _TheaterScreenState extends State<TheaterScreen>
+    with WidgetsBindingObserver, RouteAware {
   final SpotifyService _spotify = SpotifyService.create();
   final _engine = GoveeEngine();
   late final SceneRunner _runner;
@@ -1329,6 +1373,10 @@ class _TheaterScreenState extends State<TheaterScreen> with WidgetsBindingObserv
 
   Timer? _spotifyTimer;
 
+  final SyncDiscovery _discovery = SyncDiscovery();
+  StreamSubscription? _discoverySub;
+  List<DiscoveredHost> _discoveredHosts = [];
+
   @override
   void initState() {
     super.initState();
@@ -1337,6 +1385,128 @@ class _TheaterScreenState extends State<TheaterScreen> with WidgetsBindingObserv
     _doDiscover();
     _connectSpotify();
     _spotifyTimer = Timer.periodic(const Duration(minutes: 10), (_) => _refreshSpotify());
+
+    _discoverySub = _discovery.hosts.listen((hosts) {
+      if (mounted) setState(() => _discoveredHosts = hosts);
+    });
+    _startDiscovery();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final route = ModalRoute.of(context);
+    if (route != null) {
+      routeObserver.subscribe(this, route);
+    }
+  }
+
+  @override
+  void didPushNext() {
+    _stopDiscovery();
+  }
+
+  @override
+  void didPopNext() {
+    _startDiscovery();
+  }
+
+  void _startDiscovery() {
+    _discovery.start();
+  }
+
+  void _stopDiscovery() {
+    _discovery.stop();
+  }
+
+  Future<File> _lastIpFile() async {
+    final dir = await getApplicationSupportDirectory();
+    return File('${dir.path}/last_sync_ip.txt');
+  }
+
+  Future<String> _loadLastIp() async {
+    try {
+      final f = await _lastIpFile();
+      if (await f.exists()) return (await f.readAsString()).trim();
+    } catch (_) {}
+    return '';
+  }
+
+  Future<void> _saveLastIp(String ip) async {
+    try {
+      final f = await _lastIpFile();
+      await f.writeAsString(ip.trim());
+    } catch (_) {}
+  }
+
+  Future<void> _joinHost(DiscoveredHost host) async {
+    _stopDiscovery();
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => ClientLobbyScreen(
+          discoveredHost: host,
+        ),
+      ),
+    );
+    if (mounted) _startDiscovery();
+  }
+
+  Future<void> _joinByIp() async {
+    final lastIp = await _loadLastIp();
+    if (!mounted) return;
+    final controller = TextEditingController(text: lastIp);
+
+    final ip = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1A1A),
+        title: const Text('Join by IP', style: TextStyle(color: Colors.white, fontSize: 16)),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          keyboardType: TextInputType.number,
+          decoration: const InputDecoration(
+            labelText: 'Host IP address',
+            hintText: '192.168.1.50',
+            labelStyle: TextStyle(color: Colors.grey),
+            focusedBorder: UnderlineInputBorder(
+              borderSide: BorderSide(color: Color(0xFF63B8DE)),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+          ),
+          FilledButton(
+            onPressed: () {
+              final text = controller.text.trim();
+              if (text.isNotEmpty) Navigator.pop(ctx, text);
+            },
+            style: FilledButton.styleFrom(backgroundColor: const Color(0xFF63B8DE)),
+            child: const Text('Connect', style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+
+    if (ip != null && ip.isNotEmpty) {
+      await _saveLastIp(ip);
+      if (!mounted) return;
+      _stopDiscovery();
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => ClientLobbyScreen(
+            hostAddress: InternetAddress(ip),
+            port: kSyncPort,
+          ),
+        ),
+      );
+      if (mounted) _startDiscovery();
+    }
   }
 
   void _connectSpotify() {
@@ -1359,6 +1529,9 @@ class _TheaterScreenState extends State<TheaterScreen> with WidgetsBindingObserv
 
   @override
   void dispose() {
+    routeObserver.unsubscribe(this);
+    _discoverySub?.cancel();
+    _discovery.stop();
     _spotifyTimer?.cancel();
     _spotify.disconnect();
     WidgetsBinding.instance.removeObserver(this);
@@ -1620,10 +1793,96 @@ class _TheaterScreenState extends State<TheaterScreen> with WidgetsBindingObserv
     );
   }
 
+  Widget _buildNearbySessions() {
+    if (_discoveredHosts.isEmpty) {
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 16),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Text(
+              'No sessions on this network',
+              style: TextStyle(color: Colors.grey, fontSize: 13),
+            ),
+            const SizedBox(width: 8),
+            TextButton(
+              onPressed: _joinByIp,
+              style: TextButton.styleFrom(
+                visualDensity: VisualDensity.compact,
+                foregroundColor: const Color(0xFF63B8DE),
+              ),
+              child: const Text('Join by IP'),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text(
+                'NEARBY SESSIONS',
+                style: TextStyle(fontSize: 11, letterSpacing: 1.5, color: Colors.grey),
+              ),
+              TextButton(
+                onPressed: _joinByIp,
+                style: TextButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                  foregroundColor: const Color(0xFF63B8DE),
+                ),
+                child: const Text('Join by IP', style: TextStyle(fontSize: 12)),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          ..._discoveredHosts.map((host) => Container(
+            margin: const EdgeInsets.only(bottom: 8),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            decoration: BoxDecoration(
+              color: const Color(0xFF1A1A1A),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: const Color(0xFF63B8DE).withAlpha(50)),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.wifi_tethering, color: Color(0xFF63B8DE), size: 20),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    '${host.name} — ${host.packName.isNotEmpty ? host.packName : 'No pack'}',
+                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                FilledButton(
+                  onPressed: () => _joinHost(host),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: const Color(0xFF63B8DE),
+                    visualDensity: VisualDensity.compact,
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                  ),
+                  child: const Text('Join', style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
+                ),
+              ],
+            ),
+          )),
+        ],
+      ),
+    );
+  }
+
   Widget _buildSessionHome() {
     return Column(
       children: [
         const Spacer(),
+        _buildNearbySessions(),
         GestureDetector(
           onTap: _loadSession,
           child: Container(
@@ -1934,13 +2193,78 @@ class _StudioBrowserScreenState extends State<StudioBrowserScreen> with WidgetsB
 
 // ── Session Overview Screen ───────────────────────────────────────────────────
 
-class SessionOverviewScreen extends StatelessWidget {
-  final SessionPack pack;
+class SessionOverviewScreen extends StatefulWidget {
+  final LoadedPack loaded;
   final GoveeEngine engine;
-  const SessionOverviewScreen({super.key, required this.pack, required this.engine});
+  const SessionOverviewScreen({super.key, required this.loaded, required this.engine});
+
+  SessionPack get pack => loaded.pack;
+
+  @override
+  State<SessionOverviewScreen> createState() => _SessionOverviewScreenState();
+}
+
+class _SessionOverviewScreenState extends State<SessionOverviewScreen> {
+  SyncHost? _host;
+  bool _hostBindFailed = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _startHost();
+  }
+
+  Future<void> _startHost() async {
+    final host = SyncHost(widget.loaded, SyncHost.defaultHostName());
+    _host = host;
+    final ok = await host.start();
+    if (!mounted) return;
+    setState(() {
+      _hostBindFailed = !ok;
+    });
+  }
+
+  @override
+  void dispose() {
+    _host?.stop();
+    super.dispose();
+  }
+
+  Widget _buildHostSubtitle() {
+    if (_hostBindFailed) {
+      return const Text(
+        'Could not host (port busy) — running solo',
+        style: TextStyle(fontSize: 11, color: Colors.orangeAccent),
+      );
+    }
+    if (_host == null) {
+      return const Text(
+        'Starting host…',
+        style: TextStyle(fontSize: 11, color: Colors.white38),
+      );
+    }
+    return ValueListenableBuilder<List<SyncDevice>>(
+      valueListenable: _host!.devicesNotifier,
+      builder: (context, devices, _) {
+        final clients = devices.where((d) => !d.isHost).toList();
+        final String text;
+        if (clients.isEmpty) {
+          text = 'Hosting · 0 devices connected';
+        } else {
+          final names = clients.map((c) => c.name).join(', ');
+          text = 'Hosting · $names connected';
+        }
+        return Text(
+          text,
+          style: const TextStyle(fontSize: 11, color: Color(0xFF63B8DE)),
+        );
+      },
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
+    final pack = widget.pack;
     return Scaffold(
       backgroundColor: const Color(0xFF0E0E0E),
       appBar: AppBar(
@@ -1951,9 +2275,23 @@ class SessionOverviewScreen extends StatelessWidget {
         padding: const EdgeInsets.all(16),
         children: [
           GestureDetector(
-            onTap: () => Navigator.push(context, MaterialPageRoute(
-              builder: (_) => SessionPerformanceScreen(pack: pack, engine: engine),
-            )),
+            onTap: () {
+              final controller = SessionController(pack);
+              final renderer = SessionRenderer(
+                controller,
+                SceneRunner(widget.engine),
+                AudioEngine(),
+                SpotifyService.create(),
+              );
+              controller.enterScene(0);
+              Navigator.push(context, MaterialPageRoute(
+                builder: (_) => SessionPerformanceScreen(
+                  controller: controller,
+                  renderer: renderer,
+                  host: _host,
+                ),
+              ));
+            },
             child: Container(
               padding: const EdgeInsets.all(20),
               decoration: BoxDecoration(
@@ -1963,7 +2301,7 @@ class SessionOverviewScreen extends StatelessWidget {
                   end: Alignment.bottomRight,
                 ),
                 borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: Color(0xFF63B8DE).withAlpha(50)),
+                border: Border.all(color: const Color(0xFF63B8DE).withAlpha(50)),
               ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -1971,9 +2309,16 @@ class SessionOverviewScreen extends StatelessWidget {
                   Row(children: [
                     const Icon(Icons.play_circle_outline, color: Color(0xFF63B8DE), size: 28),
                     const SizedBox(width: 12),
-                    Expanded(child: Text(
-                      pack.name,
-                      style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                    Expanded(child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          pack.name,
+                          style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                        ),
+                        const SizedBox(height: 4),
+                        _buildHostSubtitle(),
+                      ],
                     )),
                     Text(
                       '${pack.scenes.length} scenes',
@@ -2010,38 +2355,47 @@ class SessionOverviewScreen extends StatelessWidget {
 // ── Session Performance Screen ────────────────────────────────────────────────
 
 class SessionPerformanceScreen extends StatefulWidget {
-  final SessionPack pack;
-  final GoveeEngine engine;
-  const SessionPerformanceScreen({super.key, required this.pack, required this.engine});
+  final SessionControl controller;
+  final SessionRenderer? renderer;
+  final SyncHost? host;
+  final String? hostName;
+
+  const SessionPerformanceScreen({
+    super.key,
+    required this.controller,
+    this.renderer,
+    this.host,
+    this.hostName,
+  });
+
+  bool get isRemote => renderer == null;
+
   @override
   State<SessionPerformanceScreen> createState() => _SessionPerformanceScreenState();
 }
 
 class _SessionPerformanceScreenState extends State<SessionPerformanceScreen>
     with SingleTickerProviderStateMixin, WidgetsBindingObserver {
-  late final SessionController _controller;
-  late final SessionRenderer _renderer;
+  late final SessionControl _controller;
+  SessionRenderer? get _renderer => widget.renderer;
   late final Ticker _ticker;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _controller = widget.controller;
+    _controller.addListener(_onControllerChanged);
     _ticker = createTicker((_) {
       if (_controller.activeTriggers.isEmpty && _ticker.isTicking) {
         _ticker.stop();
       }
       setState(() {});
     });
-    _controller = SessionController(widget.pack);
-    _controller.addListener(_onControllerChanged);
-    _renderer = SessionRenderer(
-      _controller,
-      SceneRunner(widget.engine),
-      AudioEngine(),
-      SpotifyService.create(),
-    );
-    _controller.enterScene(0);
+
+    if (widget.host != null && _controller is SessionController) {
+      widget.host!.attachController(_controller);
+    }
   }
 
   void _onControllerChanged() {
@@ -2056,15 +2410,20 @@ class _SessionPerformanceScreenState extends State<SessionPerformanceScreen>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      _renderer.onAppResumed();
+      _renderer?.onAppResumed();
     }
   }
 
   @override
   void dispose() {
-    _renderer.dispose();
+    if (widget.host != null) {
+      widget.host!.detachController();
+    }
+    _renderer?.dispose();
     _controller.removeListener(_onControllerChanged);
-    _controller.dispose();
+    if (!widget.isRemote) {
+      _controller.dispose();
+    }
     WidgetsBinding.instance.removeObserver(this);
     _ticker.dispose();
     super.dispose();
@@ -2122,7 +2481,10 @@ class _SessionPerformanceScreenState extends State<SessionPerformanceScreen>
                       ),
                       Expanded(child: Column(children: [
                         Text(scene.name.toUpperCase(), style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, letterSpacing: 2), textAlign: TextAlign.center),
-                        Text(scene.goveeRef, style: const TextStyle(fontSize: 10, color: Color(0xFF63B8DE))),
+                        if (widget.isRemote && widget.hostName != null)
+                          Text('Remote · ${widget.hostName}', style: const TextStyle(fontSize: 10, color: Colors.grey))
+                        else
+                          Text(scene.goveeRef, style: const TextStyle(fontSize: 10, color: Color(0xFF63B8DE))),
                       ])),
                       GestureDetector(
                         onTap: next != null ? () => _controller.enterScene(nextIndex) : null,
