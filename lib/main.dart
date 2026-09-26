@@ -2154,8 +2154,11 @@ class _SessionPerformanceScreenState extends State<SessionPerformanceScreen>
                 Expanded(
                   child: GridView.builder(
                     padding: const EdgeInsets.all(24),
-                    gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                      crossAxisCount: 2, crossAxisSpacing: 16, mainAxisSpacing: 16, childAspectRatio: 1.8,
+                    gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+                      maxCrossAxisExtent: 220,
+                      crossAxisSpacing: 16,
+                      mainAxisSpacing: 16,
+                      childAspectRatio: 1.8,
                     ),
                     itemCount: scene.triggers.length,
                     itemBuilder: (_, i) {
